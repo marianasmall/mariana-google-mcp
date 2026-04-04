@@ -12,7 +12,7 @@ export function registerGmailTools(server: McpServer): void {
     {
       query: z.string().describe("Gmail search query"),
       account: z.string().optional().describe("Account name (default: primary)"),
-      max_results: z.number().optional().default(10).describe("Max results (default 10)"),
+      max_results: z.coerce.number().optional().default(10).describe("Max results (default 10)"),
     },
     async ({ query, account, max_results }) => {
       const { client } = await getAuthClient(account);
@@ -184,6 +184,200 @@ export function registerGmailTools(server: McpServer): void {
           {
             type: "text" as const,
             text: `Draft created successfully (ID: ${res.data.id}). Review and send from Gmail.`,
+          },
+        ],
+      };
+    }
+  );
+
+  // --- gmail_create_label ---
+  server.tool(
+    "gmail_create_label",
+    "Create a new Gmail label. Returns the label ID for use with other label tools.",
+    {
+      name: z.string().describe("Label name (use '/' for nesting, e.g. 'Clients/Acme')"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ name, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+
+      const res = await gmail.users.labels.create({
+        userId: "me",
+        requestBody: {
+          name,
+          labelListVisibility: "labelShow",
+          messageListVisibility: "show",
+        },
+      });
+
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_create_label",
+        account: accountName,
+        summary: `Created label: "${name}" (ID: ${res.data.id})`,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ id: res.data.id, name: res.data.name, type: res.data.type }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // --- gmail_apply_label ---
+  server.tool(
+    "gmail_apply_label",
+    "Apply a label to one or more Gmail messages. Use gmail_list_labels to find label IDs.",
+    {
+      message_ids: z.array(z.string()).describe("Array of Gmail message IDs"),
+      label_id: z.string().describe("Label ID to apply (from gmail_list_labels or gmail_create_label)"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ message_ids, label_id, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+
+      let applied = 0;
+      for (const msgId of message_ids) {
+        await gmail.users.messages.modify({
+          userId: "me",
+          id: msgId,
+          requestBody: { addLabelIds: [label_id] },
+        });
+        applied++;
+      }
+
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_apply_label",
+        account: accountName,
+        summary: `Applied label ${label_id} to ${applied} message(s)`,
+        ids: message_ids,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Applied label to ${applied} message(s).`,
+          },
+        ],
+      };
+    }
+  );
+
+  // --- gmail_remove_label ---
+  server.tool(
+    "gmail_remove_label",
+    "Remove a label from one or more Gmail messages. Use gmail_list_labels to find label IDs.",
+    {
+      message_ids: z.array(z.string()).describe("Array of Gmail message IDs"),
+      label_id: z.string().describe("Label ID to remove"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ message_ids, label_id, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+
+      let removed = 0;
+      for (const msgId of message_ids) {
+        await gmail.users.messages.modify({
+          userId: "me",
+          id: msgId,
+          requestBody: { removeLabelIds: [label_id] },
+        });
+        removed++;
+      }
+
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_remove_label",
+        account: accountName,
+        summary: `Removed label ${label_id} from ${removed} message(s)`,
+        ids: message_ids,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Removed label from ${removed} message(s).`,
+          },
+        ],
+      };
+    }
+  );
+
+  // --- gmail_create_filter ---
+  server.tool(
+    "gmail_create_filter",
+    "Create a Gmail filter rule. Matches messages by criteria and applies actions automatically. At least one criterion and one action required.",
+    {
+      from: z.string().optional().describe("Match sender (e.g. 'newsletter@example.com')"),
+      to: z.string().optional().describe("Match recipient"),
+      subject: z.string().optional().describe("Match subject (substring)"),
+      query: z.string().optional().describe("Gmail search query for advanced matching"),
+      add_label_ids: z.array(z.string()).optional().describe("Label IDs to apply to matching messages"),
+      remove_label_ids: z.array(z.string()).optional().describe("Label IDs to remove (e.g. 'INBOX' to archive)"),
+      mark_read: z.boolean().optional().describe("Mark matching messages as read"),
+      star: z.boolean().optional().describe("Star matching messages"),
+      forward: z.string().optional().describe("Email address to forward matching messages to"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ from, to, subject, query, add_label_ids, remove_label_ids, mark_read, star, forward, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+
+      const criteria: Record<string, string> = {};
+      if (from) criteria.from = from;
+      if (to) criteria.to = to;
+      if (subject) criteria.subject = subject;
+      if (query) criteria.query = query;
+
+      if (Object.keys(criteria).length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "Error: At least one criterion (from, to, subject, query) is required." }],
+          isError: true,
+        };
+      }
+
+      const action: Record<string, any> = {};
+      if (add_label_ids) action.addLabelIds = add_label_ids;
+      if (remove_label_ids) action.removeLabelIds = remove_label_ids;
+      if (mark_read) action.removeLabelIds = [...(action.removeLabelIds || []), "UNREAD"];
+      if (star) action.addLabelIds = [...(action.addLabelIds || []), "STARRED"];
+      if (forward) action.forward = forward;
+
+      if (Object.keys(action).length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "Error: At least one action (add_label_ids, remove_label_ids, mark_read, star, forward) is required." }],
+          isError: true,
+        };
+      }
+
+      const res = await gmail.users.settings.filters.create({
+        userId: "me",
+        requestBody: { criteria, action },
+      });
+
+      const criteriaDesc = Object.entries(criteria).map(([k, v]) => `${k}:${v}`).join(", ");
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_create_filter",
+        account: accountName,
+        summary: `Created filter: ${criteriaDesc} (ID: ${res.data.id})`,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ id: res.data.id, criteria: res.data.criteria, action: res.data.action }, null, 2),
           },
         ],
       };

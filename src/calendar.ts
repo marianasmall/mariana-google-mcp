@@ -28,7 +28,7 @@ export function registerCalendarTools(server: McpServer): void {
     "calendar_list",
     "List upcoming calendar events.",
     {
-      days_ahead: z.number().optional().default(7).describe("Days to look ahead (default 7)"),
+      days_ahead: z.coerce.number().optional().default(7).describe("Days to look ahead (default 7)"),
       calendar_id: z.string().optional().default("primary").describe("Calendar ID (default: primary)"),
       account: z.string().optional().describe("Account name (default: primary)"),
     },

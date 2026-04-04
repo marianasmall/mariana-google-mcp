@@ -22,7 +22,7 @@ export function registerContactsTools(server: McpServer): void {
     {
       query: z.string().describe("Search query (name, email, or phone)"),
       account: z.string().optional().describe("Account name (default: primary)"),
-      max_results: z.number().optional().default(10).describe("Max results (default 10)"),
+      max_results: z.coerce.number().optional().default(10).describe("Max results (default 10)"),
     },
     async ({ query, account, max_results }) => {
       const { client } = await getAuthClient(account);
@@ -49,7 +49,7 @@ export function registerContactsTools(server: McpServer): void {
     {
       group: z.string().optional().describe("Contact group name to filter by"),
       account: z.string().optional().describe("Account name (default: primary)"),
-      max_results: z.number().optional().default(25).describe("Max results (default 25)"),
+      max_results: z.coerce.number().optional().default(25).describe("Max results (default 25)"),
     },
     async ({ group, account, max_results }) => {
       const { client } = await getAuthClient(account);
