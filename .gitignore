@@ -1,7 +1,17 @@
 node_modules/
 dist/
 *.js.map
+
+# Secrets — defense in depth (hardened 2026-04-30)
 .env
-credentials.json
+.env.*
+*credentials*
+*.secret
+*secret*
 token*.json
+client_secret*.json
+
+# Plan/scratch dirs that historically contain real config values
 docs/superpowers/
+
+_backups/
