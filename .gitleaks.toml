@@ -1,0 +1,18 @@
+# Gitleaks config for mariana-google-mcp
+#
+# Suppresses docs/superpowers/ backups (gitignored, never committed) from
+# working-tree (--no-git) scans. Real secret commits still caught by git-history scan.
+# Established 2026-05-25 — see memory/maintenance_2026-05-25.md.
+
+title = "mariana-google-mcp — suppress gitignored docs/superpowers/"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Gitignored local files"
+paths = [
+    '''/docs/superpowers/''',
+    '''/\.env$''',
+    '''/node_modules/''',
+]
