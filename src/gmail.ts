@@ -1,8 +1,26 @@
 import { google } from "googleapis";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { promises as fs } from "fs";
+import * as path from "path";
 import { getAuthClient } from "./auth.js";
 import { logAction } from "./logger.js";
+
+const ATTACHMENT_MIME_TYPES: Record<string, string> = {
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  csv: "text/csv",
+  txt: "text/plain",
+  html: "text/html",
+  zip: "application/zip",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
 export function registerGmailTools(server: McpServer): void {
   // --- gmail_search ---
@@ -38,6 +56,7 @@ export function registerGmailTools(server: McpServer): void {
             headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || "";
           return {
             id: msg.id,
+            threadId: detail.data.threadId,
             from: getHeader("From"),
             to: getHeader("To"),
             subject: getHeader("Subject"),
@@ -96,6 +115,7 @@ export function registerGmailTools(server: McpServer): void {
 
       const message = {
         id: res.data.id,
+        threadId: res.data.threadId,
         from: getHeader("From"),
         to: getHeader("To"),
         cc: getHeader("Cc"),
@@ -150,23 +170,64 @@ export function registerGmailTools(server: McpServer): void {
         ),
       cc: z.string().optional().describe("CC recipients (comma-separated)"),
       bcc: z.string().optional().describe("BCC recipients (comma-separated)"),
+      attachments: z
+        .array(z.string())
+        .optional()
+        .describe("Absolute file paths to attach (PDF, images, docs; 20MB total max)"),
+      thread_id: z
+        .string()
+        .optional()
+        .describe(
+          "Gmail thread ID to draft a REPLY into an existing conversation (get threadId from gmail_search/gmail_read; keep the same subject prefixed 'Re:'). Omit for a new conversation."
+        ),
       account: z.string().optional().describe("Account name (default: primary)"),
     },
-    async ({ to, subject, body, html, cc, bcc, account }) => {
+    async ({ to, subject, body, html, cc, bcc, attachments, thread_id, account }) => {
       const { client, accountName } = await getAuthClient(account);
       const gmail = google.gmail({ version: "v1", auth: client });
 
-      const headers = [
+      const contentType = html
+        ? "Content-Type: text/html; charset=utf-8"
+        : "Content-Type: text/plain; charset=utf-8";
+      const content = html ?? body;
+      const baseHeaders = [
         `To: ${to}`,
         `Subject: ${subject}`,
         ...(cc ? [`Cc: ${cc}`] : []),
         ...(bcc ? [`Bcc: ${bcc}`] : []),
-        html ? "Content-Type: text/html; charset=utf-8" : "Content-Type: text/plain; charset=utf-8",
-        "",
-        html ?? body,
-      ].join("\r\n");
+      ];
 
-      const encodedMessage = Buffer.from(headers)
+      let rawMessage: string;
+      if (attachments && attachments.length > 0) {
+        const boundary = `mixed_${Date.now().toString(36)}_mcp`;
+        const parts: string[] = [`--${boundary}\r\n${contentType}\r\n\r\n${content}`];
+        let totalBytes = 0;
+        for (const filePath of attachments) {
+          const data = await fs.readFile(filePath);
+          totalBytes += data.length;
+          if (totalBytes > MAX_ATTACHMENT_BYTES) {
+            throw new Error(`Attachments exceed ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB total`);
+          }
+          const name = path.basename(filePath);
+          const ext = path.extname(filePath).slice(1).toLowerCase();
+          const mime = ATTACHMENT_MIME_TYPES[ext] || "application/octet-stream";
+          const b64 = data.toString("base64").replace(/(.{76})/g, "$1\r\n");
+          parts.push(
+            `--${boundary}\r\nContent-Type: ${mime}; name="${name}"\r\nContent-Disposition: attachment; filename="${name}"\r\nContent-Transfer-Encoding: base64\r\n\r\n${b64}`
+          );
+        }
+        rawMessage = [
+          ...baseHeaders,
+          `Content-Type: multipart/mixed; boundary="${boundary}"`,
+          "",
+          parts.join("\r\n"),
+          `--${boundary}--`,
+        ].join("\r\n");
+      } else {
+        rawMessage = [...baseHeaders, contentType, "", content].join("\r\n");
+      }
+
+      const encodedMessage = Buffer.from(rawMessage)
         .toString("base64")
         .replace(/\+/g, "-")
         .replace(/\//g, "_")
@@ -174,14 +235,16 @@ export function registerGmailTools(server: McpServer): void {
 
       const res = await gmail.users.drafts.create({
         userId: "me",
-        requestBody: { message: { raw: encodedMessage } },
+        requestBody: {
+          message: { raw: encodedMessage, ...(thread_id ? { threadId: thread_id } : {}) },
+        },
       });
 
       await logAction({
         timestamp: new Date().toISOString(),
         tool: "gmail_draft",
         account: accountName,
-        summary: `Draft created: '${subject}' to ${to}`,
+        summary: `Draft created: '${subject}' to ${to}${attachments?.length ? ` (+${attachments.length} attachment${attachments.length > 1 ? "s" : ""})` : ""}${thread_id ? " (reply in thread)" : ""}`,
         ids: [res.data.id || "unknown"],
       });
 

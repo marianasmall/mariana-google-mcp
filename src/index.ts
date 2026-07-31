@@ -6,7 +6,7 @@ import { z } from "zod";
 import { registerGmailTools } from "./gmail.js";
 import { registerCalendarTools } from "./calendar.js";
 import { registerContactsTools } from "./contacts.js";
-import { runOAuthFlow, checkTokenHealth } from "./auth.js";
+import { startOAuthFlow, checkTokenHealth } from "./auth.js";
 import { loadConfig, ensureDirs } from "./config.js";
 import { logAction } from "./logger.js";
 
@@ -18,7 +18,7 @@ const server = new McpServer({
 // --- google_auth ---
 server.tool(
   "google_auth",
-  "Authenticate a Google account. Opens a browser for OAuth consent. Use this to add a new account or re-authenticate an existing one.",
+  "Authenticate a Google account. Returns the consent URL IMMEDIATELY (does not block): give it to the user, they approve in the browser as the right Google account, and the token saves in the background. Confirm afterwards with google_status. A browser tab also opens automatically as a convenience, but the URL in the response is authoritative if it opens in the wrong profile.",
   {
     account_name: z
       .string()
@@ -28,18 +28,32 @@ server.tool(
   },
   async ({ account_name }) => {
     try {
-      const email = await runOAuthFlow(account_name);
-      await logAction({
-        timestamp: new Date().toISOString(),
-        tool: "google_auth",
-        account: account_name,
-        summary: `Account authenticated: ${email}`,
-      });
+      const { authUrl, completion } = await startOAuthFlow(account_name);
+
+      // Log completion (or failure) in the background; the tool returns now.
+      completion
+        .then((email) =>
+          logAction({
+            timestamp: new Date().toISOString(),
+            tool: "google_auth",
+            account: account_name,
+            summary: `Account authenticated: ${email}`,
+          })
+        )
+        .catch((err) =>
+          logAction({
+            timestamp: new Date().toISOString(),
+            tool: "google_auth",
+            account: account_name,
+            summary: `Auth flow did not complete: ${err.message}`,
+          })
+        );
+
       return {
         content: [
           {
             type: "text" as const,
-            text: `Account "${account_name}" authenticated successfully as ${email}.`,
+            text: `Consent flow started for account "${account_name}". Have the user open this URL and approve as the correct Google account (a browser tab may have opened already):\n\n${authUrl}\n\nThe token saves automatically on completion (15-minute window). Verify with google_status.`,
           },
         ],
       };
@@ -55,7 +69,7 @@ server.tool(
 // --- google_status ---
 server.tool(
   "google_status",
-  "Check connection health for all configured Google accounts. Shows token status and last action.",
+  "Check connection health for all configured Google accounts with a LIVE credential check against Google (not just local file state). tokenStatus 'needs_reauth' means run google_auth for that account.",
   {},
   async () => {
     const config = await loadConfig();

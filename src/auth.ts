@@ -58,14 +58,36 @@ async function loadToken(emailHash: string): Promise<Credentials | null> {
  * wait for callback, exchange code for tokens.
  * Returns the authenticated email address.
  */
-export async function runOAuthFlow(accountName: string): Promise<string> {
-  return new Promise((resolve, reject) => {
+/**
+ * Start the OAuth consent flow WITHOUT blocking on completion.
+ * Returns the consent URL immediately; the token is saved in the background
+ * when the user finishes in the browser. The local callback server times out
+ * after 15 minutes. `completion` resolves with the authenticated email.
+ */
+export async function startOAuthFlow(
+  accountName: string
+): Promise<{ authUrl: string; completion: Promise<string> }> {
+  let resolveUrl!: (url: string) => void;
+  let rejectUrl!: (err: Error) => void;
+  const urlReady = new Promise<string>((res, rej) => {
+    resolveUrl = res;
+    rejectUrl = rej;
+  });
+
+  const completion = new Promise<string>((resolve, reject) => {
     const server = http.createServer();
+    const timeout = setTimeout(() => {
+      server.close();
+      reject(new Error("OAuth flow timed out after 15 minutes without consent"));
+    }, 15 * 60 * 1000);
 
     server.listen(0, async () => {
       const address = server.address();
       if (!address || typeof address === "string") {
-        reject(new Error("Failed to start local server"));
+        clearTimeout(timeout);
+        const err = new Error("Failed to start local server");
+        rejectUrl(err);
+        reject(err);
         return;
       }
       const port = address.port;
@@ -77,6 +99,7 @@ export async function runOAuthFlow(accountName: string): Promise<string> {
         scope: SCOPES,
         prompt: "consent",
       });
+      resolveUrl(authUrl);
 
       server.on("request", async (req, res) => {
         try {
@@ -110,19 +133,36 @@ export async function runOAuthFlow(accountName: string): Promise<string> {
             `<h1>Authorization successful!</h1><p>Account "${accountName}" (${email}) connected. You can close this tab.</p>`
           );
 
+          clearTimeout(timeout);
           server.close();
           resolve(email);
         } catch (err) {
           res.writeHead(500, { "Content-Type": "text/html" });
           res.end(`<h1>Error</h1><pre>${err}</pre>`);
+          clearTimeout(timeout);
           server.close();
-          reject(err);
+          reject(err instanceof Error ? err : new Error(String(err)));
         }
       });
 
-      await open(authUrl);
+      // Best effort: open the default browser. The URL is also returned to the
+      // caller, so a missed/wrong-profile browser window is recoverable.
+      try {
+        await open(authUrl);
+      } catch {
+        /* URL returned to caller regardless */
+      }
     });
   });
+
+  const authUrl = await urlReady;
+  return { authUrl, completion };
+}
+
+/** Blocking variant kept for compatibility: waits for the user to finish consent. */
+export async function runOAuthFlow(accountName: string): Promise<string> {
+  const { completion } = await startOAuthFlow(accountName);
+  return completion;
 }
 
 /**
@@ -162,13 +202,25 @@ export async function getAuthClient(accountParam?: string): Promise<{
 }
 
 /**
- * Check if a token exists and is not obviously expired for a given account.
+ * Check token health with a LIVE credential check, not just local file inspection.
+ * Attempts a token refresh against Google: a revoked/expired refresh token
+ * (invalid_grant) reports "needs_reauth" instead of falsely claiming "valid".
+ * A successful refresh is persisted, so the check also heals stale access tokens.
  */
-export async function checkTokenHealth(emailHash: string): Promise<"valid" | "expired" | "missing"> {
+export async function checkTokenHealth(
+  emailHash: string
+): Promise<"valid" | "needs_reauth" | "missing"> {
   const tokens = await loadToken(emailHash);
   if (!tokens) return "missing";
-  if (tokens.expiry_date && tokens.expiry_date < Date.now() && !tokens.refresh_token) {
-    return "expired";
+
+  const client = createOAuth2Client("http://localhost");
+  client.setCredentials(tokens);
+  try {
+    const res = await client.getAccessToken();
+    if (!res.token) return "needs_reauth";
+    await saveToken(emailHash, { ...tokens, ...client.credentials });
+    return "valid";
+  } catch {
+    return "needs_reauth";
   }
-  return "valid";
 }
