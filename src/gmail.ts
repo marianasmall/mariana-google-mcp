@@ -146,7 +146,7 @@ export function registerGmailTools(server: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Optional HTML body (tables, bold, links). When provided it is used instead of the plain-text body, which then serves only as a fallback description."
+          "Optional HTML body (tables, bold, links). PREFER this whenever the content has structure — figures, comparisons, per-person breakdowns, lists of accounts — a formatted draft reads better than plain text. Plain text is fine for short conversational notes. When provided it is used instead of the plain-text body, which then serves only as a fallback description."
         ),
       cc: z.string().optional().describe("CC recipients (comma-separated)"),
       bcc: z.string().optional().describe("BCC recipients (comma-separated)"),
