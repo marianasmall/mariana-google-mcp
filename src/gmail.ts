@@ -208,7 +208,8 @@ export function registerGmailTools(server: McpServer): void {
           if (totalBytes > MAX_ATTACHMENT_BYTES) {
             throw new Error(`Attachments exceed ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB total`);
           }
-          const name = path.basename(filePath);
+          const name =
+            path.basename(filePath).replace(/[\r\n"\\]/g, "_").trim() || "attachment";
           const ext = path.extname(filePath).slice(1).toLowerCase();
           const mime = ATTACHMENT_MIME_TYPES[ext] || "application/octet-stream";
           const b64 = data.toString("base64").replace(/(.{76})/g, "$1\r\n");
