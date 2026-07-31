@@ -22,6 +22,28 @@ const ATTACHMENT_MIME_TYPES: Record<string, string> = {
 };
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
+// RFC 822 headers carry no charset — non-ASCII values must be RFC 2047
+// encoded-words, or Gmail decodes the raw UTF-8 bytes as Latin-1 (mojibake).
+// Encoded-words are capped at 75 chars and must not split a character, so
+// long values fold into multiple words on header continuation lines.
+const encodeHeaderValue = (value: string): string => {
+  if (/^[\x20-\x7e]*$/.test(value)) return value;
+  const chunks: string[] = [];
+  let current = "";
+  for (const char of value) {
+    if (current && Buffer.byteLength(current + char, "utf8") > 45) {
+      chunks.push(current);
+      current = char;
+    } else {
+      current += char;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks
+    .map((c) => `=?UTF-8?B?${Buffer.from(c, "utf8").toString("base64")}?=`)
+    .join("\r\n ");
+};
+
 export function registerGmailTools(server: McpServer): void {
   // --- gmail_search ---
   server.tool(
@@ -192,7 +214,7 @@ export function registerGmailTools(server: McpServer): void {
       const content = html ?? body;
       const baseHeaders = [
         `To: ${to}`,
-        `Subject: ${subject}`,
+        `Subject: ${encodeHeaderValue(subject)}`,
         ...(cc ? [`Cc: ${cc}`] : []),
         ...(bcc ? [`Bcc: ${bcc}`] : []),
       ];
@@ -210,11 +232,16 @@ export function registerGmailTools(server: McpServer): void {
           }
           const name =
             path.basename(filePath).replace(/[\r\n"\\]/g, "_").trim() || "attachment";
+          // Same header-charset problem as Subject: quoted filename params must
+          // stay ASCII; the original name travels via RFC 2231 filename*.
+          const asciiName = name.replace(/[^\x20-\x7e]/g, "_");
+          const extendedName =
+            name === asciiName ? "" : `; filename*=UTF-8''${encodeURIComponent(name)}`;
           const ext = path.extname(filePath).slice(1).toLowerCase();
           const mime = ATTACHMENT_MIME_TYPES[ext] || "application/octet-stream";
           const b64 = data.toString("base64").replace(/(.{76})/g, "$1\r\n");
           parts.push(
-            `--${boundary}\r\nContent-Type: ${mime}; name="${name}"\r\nContent-Disposition: attachment; filename="${name}"\r\nContent-Transfer-Encoding: base64\r\n\r\n${b64}`
+            `--${boundary}\r\nContent-Type: ${mime}; name="${asciiName}"\r\nContent-Disposition: attachment; filename="${asciiName}"${extendedName}\r\nContent-Transfer-Encoding: base64\r\n\r\n${b64}`
           );
         }
         rawMessage = [
