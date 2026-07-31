@@ -142,11 +142,17 @@ export function registerGmailTools(server: McpServer): void {
       to: z.string().describe("Recipient email address"),
       subject: z.string().describe("Email subject"),
       body: z.string().describe("Email body (plain text)"),
+      html: z
+        .string()
+        .optional()
+        .describe(
+          "Optional HTML body (tables, bold, links). When provided it is used instead of the plain-text body, which then serves only as a fallback description."
+        ),
       cc: z.string().optional().describe("CC recipients (comma-separated)"),
       bcc: z.string().optional().describe("BCC recipients (comma-separated)"),
       account: z.string().optional().describe("Account name (default: primary)"),
     },
-    async ({ to, subject, body, cc, bcc, account }) => {
+    async ({ to, subject, body, html, cc, bcc, account }) => {
       const { client, accountName } = await getAuthClient(account);
       const gmail = google.gmail({ version: "v1", auth: client });
 
@@ -155,9 +161,9 @@ export function registerGmailTools(server: McpServer): void {
         `Subject: ${subject}`,
         ...(cc ? [`Cc: ${cc}`] : []),
         ...(bcc ? [`Bcc: ${bcc}`] : []),
-        "Content-Type: text/plain; charset=utf-8",
+        html ? "Content-Type: text/html; charset=utf-8" : "Content-Type: text/plain; charset=utf-8",
         "",
-        body,
+        html ?? body,
       ].join("\r\n");
 
       const encodedMessage = Buffer.from(headers)
