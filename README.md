@@ -13,6 +13,12 @@ This server is built for an operator who wants AI to help manage their Google wo
 
 ## Setup
 
+**Easiest path:** paste this one line into Claude Code and it will run the entire setup for you, including guiding you through the Google Cloud clicks:
+
+> Fetch https://raw.githubusercontent.com/marianasmall/mariana-google-mcp/main/SETUP-PROMPT.md and follow the instructions in it.
+
+See [SETUP-PROMPT.md](SETUP-PROMPT.md) for what it does — including an optional phase that unifies triage across multiple accounts. The manual steps below cover the same ground.
+
 ### 1. Google Cloud Project
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
