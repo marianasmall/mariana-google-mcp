@@ -66,7 +66,7 @@ Replace `/path/to/` with the actual path to your clone, and fill in your OAuth c
 
 After restarting Claude Code, run the `google_auth` tool. It will open a browser window for OAuth consent. Once authorized, your token is stored locally and refreshed automatically.
 
-## Available Tools (19)
+## Available Tools (20)
 
 ### Authentication & Status
 | Tool | Description |
@@ -80,14 +80,14 @@ After restarting Claude Code, run the `google_auth` tool. It will open a browser
 | `gmail_search` | Search messages using Gmail query syntax |
 | `gmail_read` | Read a specific message by ID (full content) |
 | `gmail_list_labels` | List all Gmail labels/folders |
-| `gmail_draft` | Create a draft email (does NOT send) |
+| `gmail_draft` | Create a draft email — plain text or rich HTML body, optional file attachments, optional reply-in-thread via `thread_id` (does NOT send) |
 | `gmail_create_label` | Create a new label (supports nesting with `/`) |
 | `gmail_apply_label` | Apply a label to one or more messages |
 | `gmail_remove_label` | Remove a label from one or more messages |
 | `gmail_create_filter` | Create a filter rule (match criteria → actions) |
 | `gmail_move_to_delete` | Soft-delete: move messages to a "To Be Deleted" label |
 
-### Calendar (6 tools)
+### Calendar (7 tools)
 | Tool | Description |
 |------|-------------|
 | `calendar_list` | List upcoming calendar events |
