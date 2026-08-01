@@ -41,7 +41,10 @@ function createOAuth2Client(redirectUri: string): OAuth2Client {
 async function saveToken(emailHash: string, tokens: Credentials): Promise<void> {
   await ensureDirs();
   const tokenPath = getTokenPath(emailHash);
-  await fs.writeFile(tokenPath, JSON.stringify(tokens, null, 2), "utf-8");
+  // Owner-only: these are live credentials. mode applies on creation; chmod
+  // covers files that already existed with looser permissions.
+  await fs.writeFile(tokenPath, JSON.stringify(tokens, null, 2), { encoding: "utf-8", mode: 0o600 });
+  await fs.chmod(tokenPath, 0o600);
 }
 
 async function loadToken(emailHash: string): Promise<Credentials | null> {

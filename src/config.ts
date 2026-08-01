@@ -27,7 +27,9 @@ export function getTokenPath(emailHash: string): string {
 }
 export async function ensureDirs(): Promise<void> {
   await fs.mkdir(CONFIG_DIR, { recursive: true });
-  await fs.mkdir(TOKENS_DIR, { recursive: true });
+  await fs.mkdir(TOKENS_DIR, { recursive: true, mode: 0o700 });
+  // mkdir's mode only applies on creation; enforce on every start.
+  await fs.chmod(TOKENS_DIR, 0o700);
 }
 export async function loadConfig(): Promise<AppConfig> {
   try {
