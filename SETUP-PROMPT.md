@@ -7,7 +7,8 @@
 You will install `mariana-google-mcp`, an open-source MCP server (MIT license) that gives Claude Code direct access to Gmail, Google Calendar, and Google Contacts across multiple Google accounts. It is deliberately safety-first:
 
 - **It cannot send email.** It creates drafts only; the user reviews and sends from Gmail.
-- **It cannot delete anything.** Gmail deletions apply a "To Be Deleted" label; calendar deletions prepend "DELETE - " to the event title. The user confirms in the Google UI.
+- **It cannot delete your mail.** Gmail deletions apply a "To Be Deleted" label; calendar deletions prepend "DELETE - " to the event title. The user confirms in the Google UI. The one exception is the user's own unsent drafts, which `gmail_delete_draft` can remove — and even that moves them to Trash by default, recoverable for 30 days, with permanent deletion behind an explicit flag.
+- **Replies actually thread.** Pass `reply_to_message_id` and the draft carries the `In-Reply-To` and `References` headers real threading depends on, not just Gmail's internal thread id. The tool states in its result whether it made a reply or a new conversation, so a mistake is visible immediately rather than discovered by the recipient.
 - **Every write is logged** to an append-only local action log.
 - **Multi-account:** each Google account connects under a named alias and tools take an `account` parameter.
 

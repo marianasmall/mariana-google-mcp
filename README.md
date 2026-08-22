@@ -7,7 +7,7 @@ A custom MCP (Model Context Protocol) server that gives Claude Code access to Gm
 This server is built for an operator who wants AI to help manage their Google workspace without risk of accidental damage:
 
 - **No sending email.** You can draft, but sending requires manual action in Gmail.
-- **No deleting anything.** Gmail uses a "To Be Deleted" label (soft-delete). Calendar prepends "DELETE - " to event titles. You review and confirm in the Google UI.
+- **No deleting your mail.** Gmail uses a "To Be Deleted" label (soft-delete). Calendar prepends "DELETE - " to event titles. You review and confirm in the Google UI. The single exception is your own unsent drafts (`gmail_delete_draft`), and that defaults to Trash — recoverable for 30 days — with permanent removal behind an explicit flag.
 - **Every mutation is logged.** An append-only JSONL action log records every write operation with timestamps, tool name, account, and summary.
 - **Multi-account support.** Manage personal and work accounts with named aliases.
 
@@ -86,6 +86,9 @@ After restarting Claude Code, run the `google_auth` tool. It will open a browser
 | `gmail_remove_label` | Remove a label from one or more messages |
 | `gmail_create_filter` | Create a filter rule (match criteria → actions) |
 | `gmail_move_to_delete` | Soft-delete: move messages to a "To Be Deleted" label |
+| `gmail_list_drafts` | List current drafts with IDs, subjects, recipients, thread |
+| `gmail_update_draft` | Revise a draft in place, preserving its thread and threading headers |
+| `gmail_delete_draft` | Remove a draft — Trash by default (30-day recovery), permanent on request |
 
 ### Calendar (7 tools)
 | Tool | Description |
