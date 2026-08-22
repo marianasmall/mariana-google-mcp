@@ -22,6 +22,63 @@ const ATTACHMENT_MIME_TYPES: Record<string, string> = {
 };
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 
+// Threading needs MORE than Gmail's threadId.
+//
+// threadId files a draft into the right thread in Gmail's own storage, which is
+// why a broken reply still LOOKS correct in the sender's mailbox. Every other
+// mail client threads on the RFC 5322 headers instead: In-Reply-To and
+// References, both carrying the original message's Message-ID. Send without
+// them and the recipient sees a brand-new conversation.
+//
+// Gmail also rejects or detaches a threaded draft whose Subject does not match
+// the thread, so the subject is inherited here rather than trusted to the caller.
+//
+// Fixed 2026-08-21 after replies kept arriving as new conversations.
+type ReplyContext = {
+  threadId: string;
+  messageId: string | null;
+  references: string | null;
+  subject: string | null;
+};
+
+const getReplyContext = async (
+  gmail: any,
+  replyToMessageId: string
+): Promise<ReplyContext> => {
+  const original = await gmail.users.messages.get({
+    userId: "me",
+    id: replyToMessageId,
+    format: "metadata",
+    metadataHeaders: ["Message-ID", "Message-Id", "References", "Subject"],
+  });
+
+  const headers = original.data.payload?.headers ?? [];
+  const header = (name: string): string | null =>
+    headers.find((h: any) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? null;
+
+  return {
+    threadId: original.data.threadId,
+    messageId: header("Message-ID") ?? header("Message-Id"),
+    references: header("References"),
+    subject: header("Subject"),
+  };
+};
+
+// References accumulates the whole ancestry, oldest first, so deep threads stay
+// linked even for clients that only read that header.
+const buildThreadingHeaders = (ctx: ReplyContext): string[] => {
+  if (!ctx.messageId) return [];
+  const references = ctx.references
+    ? `${ctx.references} ${ctx.messageId}`
+    : ctx.messageId;
+  return [`In-Reply-To: ${ctx.messageId}`, `References: ${references}`];
+};
+
+const replySubject = (original: string | null, provided: string): string => {
+  const base = original ?? provided;
+  return /^re:/i.test(base) ? base : `Re: ${base}`;
+};
+
 // RFC 822 headers carry no charset — non-ASCII values must be RFC 2047
 // encoded-words, or Gmail decodes the raw UTF-8 bytes as Latin-1 (mojibake).
 // Encoded-words are capped at 75 chars and must not split a character, so
@@ -179,7 +236,7 @@ export function registerGmailTools(server: McpServer): void {
   // --- gmail_draft ---
   server.tool(
     "gmail_draft",
-    "Create a draft email. Does NOT send — the draft appears in Gmail for manual review and sending.",
+    "Create a draft email. Does NOT send — the draft appears in Gmail for manual review and sending. REPLYING: if the user said 'reply to' / 'write back to' / 'follow up on' an existing email, you MUST pass reply_to_message_id (get it from gmail_search or gmail_read). Omitting it silently creates a NEW conversation that arrives detached from the thread — the result text tells you which happened, so check it.",
     {
       to: z.string().describe("Recipient email address"),
       subject: z.string().describe("Email subject"),
@@ -196,17 +253,32 @@ export function registerGmailTools(server: McpServer): void {
         .array(z.string())
         .optional()
         .describe("Absolute file paths to attach (PDF, images, docs; 20MB total max)"),
+      reply_to_message_id: z
+        .string()
+        .optional()
+        .describe(
+          "PREFERRED way to reply. Message ID of the email being replied to (from gmail_search/gmail_read). Sets the thread, the In-Reply-To and References headers, and inherits the thread's subject — everything real threading needs. Use this rather than thread_id whenever you have a message in hand."
+        ),
       thread_id: z
         .string()
         .optional()
         .describe(
-          "Gmail thread ID to draft a REPLY into an existing conversation (get threadId from gmail_search/gmail_read; keep the same subject prefixed 'Re:'). Omit for a new conversation."
+          "Lower-level alternative to reply_to_message_id. Gmail thread ID only: it files the draft into the thread in YOUR mailbox but sets no RFC threading headers, so recipients may still see a new conversation. Prefer reply_to_message_id."
         ),
       account: z.string().optional().describe("Account name (default: primary)"),
     },
-    async ({ to, subject, body, html, cc, bcc, attachments, thread_id, account }) => {
+    async ({ to, subject, body, html, cc, bcc, attachments, reply_to_message_id, thread_id, account }) => {
       const { client, accountName } = await getAuthClient(account);
       const gmail = google.gmail({ version: "v1", auth: client });
+
+      // Resolve reply context first: it can override both the thread and the
+      // subject, and Gmail detaches a threaded draft whose subject disagrees.
+      let replyCtx: ReplyContext | null = null;
+      if (reply_to_message_id) {
+        replyCtx = await getReplyContext(gmail, reply_to_message_id);
+      }
+      const effectiveThreadId = replyCtx?.threadId ?? thread_id;
+      const effectiveSubject = replyCtx ? replySubject(replyCtx.subject, subject) : subject;
 
       const contentType = html
         ? "Content-Type: text/html; charset=utf-8"
@@ -214,9 +286,10 @@ export function registerGmailTools(server: McpServer): void {
       const content = html ?? body;
       const baseHeaders = [
         `To: ${to}`,
-        `Subject: ${encodeHeaderValue(subject)}`,
+        `Subject: ${encodeHeaderValue(effectiveSubject)}`,
         ...(cc ? [`Cc: ${cc}`] : []),
         ...(bcc ? [`Bcc: ${bcc}`] : []),
+        ...(replyCtx ? buildThreadingHeaders(replyCtx) : []),
       ];
 
       let rawMessage: string;
@@ -264,15 +337,32 @@ export function registerGmailTools(server: McpServer): void {
       const res = await gmail.users.drafts.create({
         userId: "me",
         requestBody: {
-          message: { raw: encodedMessage, ...(thread_id ? { threadId: thread_id } : {}) },
+          message: {
+            raw: encodedMessage,
+            ...(effectiveThreadId ? { threadId: effectiveThreadId } : {}),
+          },
         },
       });
+
+      // Say plainly which of the two things happened. The old failure mode was
+      // silent: a reply drafted without threading info looked identical in the
+      // result, and only the recipient ever found out.
+      let threadingNote: string;
+      if (replyCtx) {
+        threadingNote = replyCtx.messageId
+          ? `Threaded REPLY (thread ${replyCtx.threadId}, In-Reply-To set).`
+          : `Filed into thread ${replyCtx.threadId}, but the original carried no Message-ID header, so RFC threading headers could not be set — recipients may see a new conversation.`;
+      } else if (effectiveThreadId) {
+        threadingNote = `Filed into thread ${effectiveThreadId} via thread_id only — no RFC threading headers, so recipients may see a NEW conversation. Pass reply_to_message_id for a real reply.`;
+      } else {
+        threadingNote = `NEW conversation (not a reply). If this was meant to reply to something, recreate it with reply_to_message_id.`;
+      }
 
       await logAction({
         timestamp: new Date().toISOString(),
         tool: "gmail_draft",
         account: accountName,
-        summary: `Draft created: '${subject}' to ${to}${attachments?.length ? ` (+${attachments.length} attachment${attachments.length > 1 ? "s" : ""})` : ""}${thread_id ? " (reply in thread)" : ""}`,
+        summary: `Draft created: '${effectiveSubject}' to ${to}${attachments?.length ? ` (+${attachments.length} attachment${attachments.length > 1 ? "s" : ""})` : ""}${replyCtx ? " (threaded reply)" : effectiveThreadId ? " (thread_id only)" : ""}`,
         ids: [res.data.id || "unknown"],
       });
 
@@ -280,9 +370,236 @@ export function registerGmailTools(server: McpServer): void {
         content: [
           {
             type: "text" as const,
-            text: `Draft created successfully (ID: ${res.data.id}). Review and send from Gmail.`,
+            text: `Draft created (ID: ${res.data.id}). ${threadingNote} Review and send from Gmail.`,
           },
         ],
+      };
+    }
+  );
+
+  // --- gmail_list_drafts ---
+  server.tool(
+    "gmail_list_drafts",
+    "List current Gmail drafts with their IDs, subjects and recipients. Use this to find the draft ID needed by gmail_update_draft and gmail_delete_draft.",
+    {
+      max_results: z.number().optional().describe("How many drafts to return (default 20)"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ max_results, account }) => {
+      const { client } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+
+      const list = await gmail.users.drafts.list({
+        userId: "me",
+        maxResults: max_results ?? 20,
+      });
+      const drafts = list.data.drafts ?? [];
+      if (drafts.length === 0) {
+        return { content: [{ type: "text" as const, text: "No drafts." }] };
+      }
+
+      const rows: string[] = [];
+      for (const d of drafts) {
+        const full = await gmail.users.drafts.get({
+          userId: "me",
+          id: d.id!,
+          format: "metadata",
+        });
+        const headers = full.data.message?.payload?.headers ?? [];
+        const header = (n: string) =>
+          headers.find((h: any) => h.name?.toLowerCase() === n.toLowerCase())?.value ?? "";
+        rows.push(
+          `${d.id}  |  ${header("Subject") || "(no subject)"}  |  to: ${header("To") || "(none)"}  |  thread: ${full.data.message?.threadId ?? "-"}`
+        );
+      }
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `${rows.length} draft(s):\n\n${rows.join("\n")}`,
+          },
+        ],
+      };
+    }
+  );
+
+  // --- gmail_update_draft ---
+  server.tool(
+    "gmail_update_draft",
+    "Revise an existing Gmail draft in place, instead of creating a second one. Only the fields you pass change; everything else (recipients, subject, and crucially the thread it belongs to) is carried forward. Get the draft ID from gmail_list_drafts.",
+    {
+      draft_id: z.string().describe("Draft ID (from gmail_list_drafts)"),
+      to: z.string().optional().describe("New recipient(s). Omit to keep the existing ones."),
+      subject: z.string().optional().describe("New subject. Omit to keep the existing one."),
+      body: z.string().optional().describe("New plain-text body. Omit to keep the existing content."),
+      html: z.string().optional().describe("New HTML body. Takes precedence over body, same as gmail_draft."),
+      cc: z.string().optional().describe("New CC. Omit to keep existing."),
+      bcc: z.string().optional().describe("New BCC. Omit to keep existing."),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ draft_id, to, subject, body, html, cc, bcc, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+
+      // Gmail's drafts.update REPLACES the whole message rather than patching it.
+      // Anything not resupplied is destroyed — including the threading headers,
+      // which is how "editing a reply" silently turns it into a new conversation.
+      // So: read everything first, then rebuild with the caller's overrides on top.
+      const existing = await gmail.users.drafts.get({
+        userId: "me",
+        id: draft_id,
+        format: "full",
+      });
+      const msg = existing.data.message;
+      const headers = msg?.payload?.headers ?? [];
+      const header = (n: string): string =>
+        headers.find((h: any) => h.name?.toLowerCase() === n.toLowerCase())?.value ?? "";
+
+      const keptThreadId = msg?.threadId;
+      const inReplyTo = header("In-Reply-To");
+      const references = header("References");
+
+      const finalTo = to ?? header("To");
+      const finalSubject = subject ?? header("Subject");
+      const finalCc = cc ?? header("Cc");
+      const finalBcc = bcc ?? header("Bcc");
+
+      let finalContent: string;
+      let isHtml: boolean;
+      if (html) {
+        finalContent = html;
+        isHtml = true;
+      } else if (body) {
+        finalContent = body;
+        isHtml = false;
+      } else {
+        // Neither supplied: keep whatever the draft already had.
+        const findPart = (p: any, mime: string): any => {
+          if (!p) return null;
+          if (p.mimeType === mime && p.body?.data) return p;
+          for (const sub of p.parts ?? []) {
+            const hit = findPart(sub, mime);
+            if (hit) return hit;
+          }
+          return null;
+        };
+        const htmlPart = findPart(msg?.payload, "text/html");
+        const textPart = findPart(msg?.payload, "text/plain");
+        const chosen = htmlPart ?? textPart ?? msg?.payload;
+        isHtml = Boolean(htmlPart);
+        finalContent = chosen?.body?.data
+          ? Buffer.from(chosen.body.data, "base64").toString("utf8")
+          : "";
+      }
+
+      const rawMessage = [
+        `To: ${finalTo}`,
+        `Subject: ${encodeHeaderValue(finalSubject)}`,
+        ...(finalCc ? [`Cc: ${finalCc}`] : []),
+        ...(finalBcc ? [`Bcc: ${finalBcc}`] : []),
+        ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []),
+        ...(references ? [`References: ${references}`] : []),
+        isHtml
+          ? "Content-Type: text/html; charset=utf-8"
+          : "Content-Type: text/plain; charset=utf-8",
+        "",
+        finalContent,
+      ].join("\r\n");
+
+      const encodedMessage = Buffer.from(rawMessage)
+        .toString("base64")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+
+      await gmail.users.drafts.update({
+        userId: "me",
+        id: draft_id,
+        requestBody: {
+          message: {
+            raw: encodedMessage,
+            ...(keptThreadId ? { threadId: keptThreadId } : {}),
+          },
+        },
+      });
+
+      const threadingNote = inReplyTo
+        ? "Threading preserved (In-Reply-To and References carried forward)."
+        : keptThreadId
+          ? `Kept in thread ${keptThreadId}.`
+          : "Standalone draft, no thread to preserve.";
+
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_update_draft",
+        account: accountName,
+        summary: `Draft updated: '${finalSubject}'${inReplyTo ? " (threading preserved)" : ""}`,
+        ids: [draft_id],
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Draft ${draft_id} updated in place. ${threadingNote} No second draft created.`,
+          },
+        ],
+      };
+    }
+  );
+
+  // --- gmail_delete_draft ---
+  server.tool(
+    "gmail_delete_draft",
+    "Delete a Gmail draft. Moves it to Trash by default (recoverable for 30 days). Set permanent:true only when it must be unrecoverable. Get the draft ID from gmail_list_drafts.",
+    {
+      draft_id: z.string().describe("Draft ID (from gmail_list_drafts)"),
+      permanent: z
+        .boolean()
+        .optional()
+        .describe(
+          "Default false: the draft goes to Trash and can be restored. True deletes it outright with no recovery path — only for genuinely disposable drafts."
+        ),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ draft_id, permanent, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+
+      // Read it first so the log records WHAT was removed, not just an opaque id.
+      const existing = await gmail.users.drafts.get({
+        userId: "me",
+        id: draft_id,
+        format: "metadata",
+      });
+      const headers = existing.data.message?.payload?.headers ?? [];
+      const subject =
+        headers.find((h: any) => h.name?.toLowerCase() === "subject")?.value ?? "(no subject)";
+      const messageId = existing.data.message?.id;
+
+      let outcome: string;
+      if (permanent) {
+        await gmail.users.drafts.delete({ userId: "me", id: draft_id });
+        outcome = "permanently deleted (no recovery)";
+      } else {
+        // Trashing the underlying message removes it from Drafts while leaving it
+        // restorable, which the drafts.delete endpoint cannot do.
+        if (!messageId) throw new Error("Draft has no message id; cannot trash it. Use permanent:true to remove it outright.");
+        await gmail.users.messages.trash({ userId: "me", id: messageId });
+        outcome = "moved to Trash (restorable for 30 days)";
+      }
+
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_delete_draft",
+        account: accountName,
+        summary: `Draft ${outcome}: '${subject}'`,
+        ids: [draft_id],
+      });
+
+      return {
+        content: [{ type: "text" as const, text: `Draft '${subject}' ${outcome}.` }],
       };
     }
   );
