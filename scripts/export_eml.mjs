@@ -4,7 +4,7 @@
 // Usage:
 //   node scripts/export_eml.mjs --account primary --out /path/to/dir [--dry-run] <messageId> [<messageId> ...]
 //
-// Why: the SVT Bates pipeline needs headers-intact .eml files in staging, and the
+// Why: evidence/archive pipelines need headers-intact .eml files, and the
 // MCP's gmail_read returns parsed bodies only. This reuses the MCP's own OAuth
 // token store (dist/auth.js) so there is nothing new to authorize.
 //
