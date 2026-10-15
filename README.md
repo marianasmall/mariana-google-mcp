@@ -1,13 +1,33 @@
 # mariana-google-mcp
 
-A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts — with safety-first defaults.
+A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts, with safety-first defaults: it drafts but never sends, flags but never deletes, and logs every write.
+
+**Who this is for:** operators who want Claude to help run their Google inbox and calendar without giving it the power to send or destroy anything.
+
+[![License](https://img.shields.io/github/license/marianasmall/mariana-google-mcp)](LICENSE)
+[![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-D97757)](https://claude.com/claude-code)
+[![Last commit](https://img.shields.io/github/last-commit/marianasmall/mariana-google-mcp)](https://github.com/marianasmall/mariana-google-mcp/commits/main)
+
+![Tools exposed to Claude Code](docs/assets/readme-tools.svg)
+
+*The 23 tools this server gives Claude Code, with descriptions taken from the source. Dotted tools write to your account and are logged.*
+
+## Quick start
+
+```bash
+git clone https://github.com/marianasmall/mariana-google-mcp.git
+cd mariana-google-mcp
+npm install && npm run build
+```
+
+Then add the server to Claude Code and run `google_auth` (steps 3 and 4 under [Setup](#setup)). You need your own Google Cloud OAuth credentials first (step 1).
 
 ## Design Philosophy
 
 This server is built for an operator who wants AI to help manage their Google workspace without risk of accidental damage:
 
 - **No sending email.** You can draft, but sending requires manual action in Gmail.
-- **No deleting your mail.** Gmail uses a "To Be Deleted" label (soft-delete). Calendar prepends "DELETE - " to event titles. You review and confirm in the Google UI. The single exception is your own unsent drafts (`gmail_delete_draft`), and that defaults to Trash — recoverable for 30 days — with permanent removal behind an explicit flag.
+- **No deleting your mail.** Gmail uses a "To Be Deleted" label (soft-delete). Calendar prepends "DELETE - " to event titles. You review and confirm in the Google UI. The single exception is your own unsent drafts (`gmail_delete_draft`), and that defaults to Trash (recoverable for 30 days), with permanent removal behind an explicit flag.
 - **Every mutation is logged.** An append-only JSONL action log records every write operation with timestamps, tool name, account, and summary.
 - **Multi-account support.** Manage personal and work accounts with named aliases.
 
@@ -17,7 +37,7 @@ This server is built for an operator who wants AI to help manage their Google wo
 
 > Fetch https://raw.githubusercontent.com/marianasmall/mariana-google-mcp/main/SETUP-PROMPT.md and follow the instructions in it.
 
-See [SETUP-PROMPT.md](SETUP-PROMPT.md) for what it does — including an optional phase that unifies triage across multiple accounts. The manual steps below cover the same ground.
+See [SETUP-PROMPT.md](SETUP-PROMPT.md) for what it does, including an optional phase that unifies triage across multiple accounts. The manual steps below cover the same ground.
 
 ### 1. Google Cloud Project
 
@@ -66,7 +86,7 @@ Replace `/path/to/` with the actual path to your clone, and fill in your OAuth c
 
 After restarting Claude Code, run the `google_auth` tool. It will open a browser window for OAuth consent. Once authorized, your token is stored locally and refreshed automatically.
 
-## Available Tools (20)
+## Available Tools (23)
 
 ### Authentication & Status
 | Tool | Description |
@@ -74,13 +94,13 @@ After restarting Claude Code, run the `google_auth` tool. It will open a browser
 | `google_auth` | Authenticate a Google account via OAuth browser flow |
 | `google_status` | Check connection health for all configured accounts |
 
-### Gmail (9 tools)
+### Gmail (12 tools)
 | Tool | Description |
 |------|-------------|
 | `gmail_search` | Search messages using Gmail query syntax |
 | `gmail_read` | Read a specific message by ID (full content) |
 | `gmail_list_labels` | List all Gmail labels/folders |
-| `gmail_draft` | Create a draft email — plain text or rich HTML body, optional file attachments, optional reply-in-thread via `thread_id` (does NOT send) |
+| `gmail_draft` | Create a draft email: plain text or rich HTML body, optional file attachments, optional reply-in-thread via `thread_id` (does NOT send) |
 | `gmail_create_label` | Create a new label (supports nesting with `/`) |
 | `gmail_apply_label` | Apply a label to one or more messages |
 | `gmail_remove_label` | Remove a label from one or more messages |
@@ -88,7 +108,7 @@ After restarting Claude Code, run the `google_auth` tool. It will open a browser
 | `gmail_move_to_delete` | Soft-delete: move messages to a "To Be Deleted" label |
 | `gmail_list_drafts` | List current drafts with IDs, subjects, recipients, thread |
 | `gmail_update_draft` | Revise a draft in place, preserving its thread and threading headers |
-| `gmail_delete_draft` | Remove a draft — Trash by default (30-day recovery), permanent on request |
+| `gmail_delete_draft` | Remove a draft. Trash by default (30-day recovery), permanent on request |
 
 ### Calendar (7 tools)
 | Tool | Description |
@@ -127,13 +147,13 @@ All configuration is stored in `~/.config/mariana-google-mcp/`:
 |------|---------|
 | `config.json` | Account registry (names, email hashes, defaults) |
 | `tokens/<hash>.json` | OAuth tokens per account (auto-refreshed) |
-| `actions.jsonl` | Append-only log of all mutations |
+| `action-log.jsonl` | Append-only log of all mutations |
 
 Tokens are stored by email hash, not plaintext email, for a layer of indirection.
 
 ## Action Log
 
-Every write operation (drafts, calendar creates/updates, soft-deletes) is logged to `~/.config/mariana-google-mcp/actions.jsonl` in this format:
+Every write operation (drafts, calendar creates/updates, soft-deletes) is logged to `~/.config/mariana-google-mcp/action-log.jsonl` in this format:
 
 ```json
 {"timestamp":"2026-04-03T10:30:00.000Z","tool":"gmail_draft","account":"primary","summary":"Draft created: subject='Meeting follow-up'"}
@@ -150,15 +170,15 @@ To use this with your own Google account:
 3. Build and point your Claude Code config at your fork's `dist/index.js`
 4. Run `google_auth` to authenticate
 
-No code changes needed — all account-specific data lives in config files and environment variables.
+No code changes needed. All account-specific data lives in config files and environment variables.
 
 ## Tech Stack
 
 - TypeScript
-- `@modelcontextprotocol/sdk` — MCP protocol implementation
-- `googleapis` — Google API client
-- `google-auth-library` — OAuth2 token management
-- `zod` — Input validation
+- `@modelcontextprotocol/sdk`: MCP protocol implementation
+- `googleapis`: Google API client
+- `google-auth-library`: OAuth2 token management
+- `zod`: Input validation
 
 ## License
 
