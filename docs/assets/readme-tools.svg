@@ -52,6 +52,6 @@
 
   <line x1="24" y1="704" x2="856" y2="704" stroke="#30363d"/>
   <circle cx="36" cy="726" r="3.5" class="dot"/><text x="48" y="730" class="muted">= writes to your account; every one is appended to the local action log</text>
-  <text x="24" y="756" class="foot">Drafts only, never sends  ·  Moves and flags, never deletes*  ·  Every write logged</text>
-  <text x="24" y="776" class="muted">* The one exception: gmail_delete_draft removes your own drafts, to Trash by default.</text>
+  <text x="24" y="756" class="foot">No send tool  ·  Moves and flags, never deletes*  ·  Every write logged</text>
+  <text x="24" y="776" class="muted">* Opt-in: filters can forward, events can invite, drafts can be trashed or deleted.</text>
 </svg>

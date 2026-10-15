@@ -1,8 +1,8 @@
 # mariana-google-mcp
 
-A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts, with safety-first defaults: it drafts but never sends, flags but never deletes, and logs every write.
+A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts, with safety-first defaults. Email itself is never sent: there is no send tool. Mail and events are moved or flagged, never deleted. Every write is logged. Three opt-in exceptions: a filter can forward, a calendar event can invite, and your own unsent drafts can be trashed (or permanently removed on an explicit flag).
 
-**Who this is for:** operators who want Claude to help run their Google inbox and calendar without giving it the power to send or destroy anything.
+**Who this is for:** operators who want Claude to help run their Google inbox and calendar, while sending and deleting stay in their own hands by default.
 
 [![License](https://img.shields.io/github/license/marianasmall/mariana-google-mcp)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-D97757)](https://claude.com/claude-code)
