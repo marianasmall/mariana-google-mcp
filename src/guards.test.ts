@@ -95,6 +95,45 @@ test("nonexistent file throws GuardError", async () => {
   await assert.rejects(resolveAttachmentPath(path.join(root, "nope.pdf"), [root], []), GuardError);
 });
 
+test("every attachment rejection has the identical actionable message (no existence oracle)", async () => {
+  const forbidden = path.join(root, "forbid2");
+  await fs.mkdir(forbidden, { recursive: true });
+  await fs.writeFile(path.join(forbidden, "d.pdf"), "x");
+  await fs.mkdir(path.join(root, ".h2"), { recursive: true });
+  await fs.writeFile(path.join(root, ".h2", "x.pdf"), "x");
+  await fs.writeFile(path.join(root, "id_rsa"), "x");
+  const cases = [
+    path.join(root, "missing-file.pdf"), // does not exist
+    path.join(outside, "outside.txt"), // exists, outside roots
+    path.join(outside, "does-not-exist.txt"), // missing, outside roots
+    path.join(forbidden, "d.pdf"), // forbidden dir
+    path.join(root, ".h2", "x.pdf"), // hidden folder
+    path.join(root, "id_rsa"), // credential basename
+    "relative/path.pdf", // not absolute
+  ];
+  const messages: string[] = [];
+  for (const c of cases) {
+    try {
+      await resolveAttachmentPath(c, [root], [forbidden]);
+      assert.fail(`expected rejection for ${c}`);
+    } catch (e) {
+      assert.ok(e instanceof GuardError);
+      messages.push(e.message);
+    }
+  }
+  assert.equal(new Set(messages).size, 1, "messages must all be identical");
+  const msg = messages[0];
+  assert.ok(msg.includes(root), "lists the configured roots");
+  assert.match(msg, /attachmentRoots/);
+  assert.ok(!msg.includes("missing-file") && !msg.includes("id_rsa"), "does not echo the rejected path");
+});
+
+test("other guard messages say what to do instead", () => {
+  assert.throws(() => assertNoCRLF("To", "a\nb"), /To must not contain line breaks.*Remove/);
+  assert.throws(() => assertSafeAddLabels(["TRASH"]), /TRASH.*instead/);
+  assert.throws(() => assertAttendeesAllowed(["b@y.com"], []), /b@y\.com.*allowedAttendees/);
+});
+
 test("assertNoCRLF rejects header injection, allows quoted display names", () => {
   assert.throws(() => assertNoCRLF("To", "a@b.com\r\nBcc: x@y.com"), GuardError);
   assert.throws(() => assertNoCRLF("To", "a@b.com\nBcc: x@y.com"), GuardError);

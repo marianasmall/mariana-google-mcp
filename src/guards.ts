@@ -28,23 +28,14 @@ async function tryRealpath(p: string): Promise<string | null> {
   }
 }
 
-/**
- * Resolve an attachment path to its real location, or throw GuardError.
- * The realpath (symlinks and ".." resolved) must sit under one of `roots`.
- */
-export async function resolveAttachmentPath(
+async function checkAttachmentPath(
   p: string,
   roots: string[],
   forbiddenDirs: string[]
-): Promise<string> {
-  if (!path.isAbsolute(p)) throw new GuardError("Attachment path must be absolute");
-
-  let real: string;
-  try {
-    real = await fs.realpath(p);
-  } catch {
-    throw new GuardError("Attachment path does not exist or is not readable");
-  }
+): Promise<string | null> {
+  if (!path.isAbsolute(p)) return null;
+  const real = await tryRealpath(p);
+  if (!real) return null;
 
   let matchedRoot: string | null = null;
   for (const r of roots) {
@@ -54,38 +45,51 @@ export async function resolveAttachmentPath(
       break;
     }
   }
-  if (!matchedRoot) throw new GuardError("Attachment path is outside the allowed attachment roots");
+  if (!matchedRoot) return null;
 
-  const segments = path.relative(matchedRoot, real).split(path.sep);
-  if (segments.some((s) => s.startsWith("."))) {
-    throw new GuardError("Attachment path contains a hidden file or directory");
-  }
+  if (path.relative(matchedRoot, real).split(path.sep).some((s) => s.startsWith("."))) return null;
 
   for (const f of forbiddenDirs) {
     const realForbidden = (await tryRealpath(f)) ?? path.resolve(f);
-    if (real === realForbidden || isUnder(real, realForbidden)) {
-      throw new GuardError("Attachment path is inside a forbidden directory");
-    }
+    if (real === realForbidden || isUnder(real, realForbidden)) return null;
   }
 
-  const base = path.basename(real);
-  if (SENSITIVE_BASENAMES.some((re) => re.test(base))) {
-    throw new GuardError("Attachment filename looks like a credential or key file");
-  }
+  if (SENSITIVE_BASENAMES.some((re) => re.test(path.basename(real)))) return null;
+  return real;
+}
 
+/**
+ * Resolve an attachment path to its real location, or throw GuardError.
+ * The realpath (symlinks and ".." resolved) must sit under one of `roots`.
+ * Every rejection throws the SAME message, so the error cannot be used to
+ * learn whether a given file exists. The rejected path is never echoed.
+ */
+export async function resolveAttachmentPath(
+  p: string,
+  roots: string[],
+  forbiddenDirs: string[]
+): Promise<string> {
+  const real = await checkAttachmentPath(p, roots, forbiddenDirs);
+  if (real === null) {
+    throw new GuardError(
+      `Attachment not allowed. Attach only an existing file inside one of these folders: ${roots.join(", ")}, ` +
+        "not inside a hidden folder or a credentials folder. Save the file into one of those folders, " +
+        "or ask the user to add a folder to attachmentRoots in config.json."
+    );
+  }
   return real;
 }
 
 export function assertNoCRLF(field: string, value: string | undefined): void {
   if (value !== undefined && /[\r\n]/.test(value)) {
-    throw new GuardError(`${field} must not contain line breaks`);
+    throw new GuardError(`${field} must not contain line breaks (CR or LF). Remove them and pass a single-line value; separate multiple addresses with commas.`);
   }
 }
 
 export function assertSafeAddLabels(ids: string[]): void {
   for (const id of ids) {
     if (id === "TRASH" || id === "SPAM") {
-      throw new GuardError(`Adding the ${id} label is not allowed`);
+      throw new GuardError(`Adding the ${id} label is not allowed. Apply a normal label instead, or ask the user to trash or spam the message themselves.`);
     }
   }
 }
@@ -94,7 +98,7 @@ export function assertAttendeesAllowed(attendees: string[], allowed: string[]): 
   const ok = new Set(allowed.map((a) => a.toLowerCase()));
   for (const a of attendees) {
     if (!ok.has(a.toLowerCase())) {
-      throw new GuardError(`Attendee ${a} is not on the allowed attendees list`);
+      throw new GuardError(`Attendee ${a} is not on the allowed attendees list. Remove that attendee, or ask the user to add the address to allowedAttendees in config.json.`);
     }
   }
 }
