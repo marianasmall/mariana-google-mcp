@@ -214,18 +214,8 @@ function findAnchorHrefSpans(text: string): Array<[number, number]> {
     }
     i = j;
     if (!closed) break;
-    if (tagName === "style" || tagName === "title") {
-      // The only raw-text tags allowed. Comments, svg/math, script, textarea etc. are refused
-      // outright by RESIDUE_PATTERNS, so no other skipping rules (and no parser differentials) exist.
-      // The body must hold no "<" at all, and the close tag is found with an ASCII-only regex on the
-      // ORIGINAL string (never a lowercased copy, whose indices can shift on non-ASCII text).
-      const closeRe = new RegExp("</" + tagName + "\\s*>", "gi");
-      closeRe.lastIndex = j;
-      const cm = closeRe.exec(text);
-      if (!cm || text.slice(j, cm.index).includes("<")) throw remoteResourceError();
-      i = cm.index + cm[0].length;
-      continue;
-    }
+    // No raw-text handling at all: every raw-text tag (style, title, script, textarea, ...) is refused
+    // outright by RESIDUE_PATTERNS, so there is no body or close-tag parsing to disagree with browsers.
     if (tagName !== "a" && tagName !== "area") continue;
     if (!/^<(a|area)\b[^<>]*>$/i.test(text.slice(lt, j))) continue;
     for (const h of hrefs) {
@@ -277,7 +267,7 @@ const RESIDUE_PATTERNS: RegExp[] = [
   /http-equiv/i,
   /<\s*(?:i?frame|frameset|object|embed)\b/i, // drafts never need embedded documents
   /<\s*[!?]|<\/(?![a-z])/i, // bogus comments (<!x, <?, </ + non-letter); the one allowed doctype is stripped first
-  /<!--|<\s*(?:svg|math|script|noscript|xmp|plaintext|noembed|noframes|template|textarea)\b/i, // ambiguous parsing contexts
+  /<!--|<\s*(?:style|title|svg|math|script|noscript|xmp|plaintext|noembed|noframes|template|textarea)\b/i, // ambiguous parsing contexts
   /data:(?!image\/(?:png|jpe?g|gif|webp);base64,)/i, // any data: form except raster base64 images
 ];
 

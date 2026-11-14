@@ -236,6 +236,10 @@ const REMOTE_BYPASSES: Record<string, string> = {
   "math tag": `<math>`,
   "template tag": `<template>`,
   "noscript tag": `<noscript>`,
+  "style block, even harmless": `<style>p{color:red}</style><a href="https://example.com">x</a>`,
+  "title tag": `<title>Hi</title>`,
+  "style close tag with nbsp": `<style>p{}</style ><a href="x{background:url(https://evil)}">x</a>`,
+  "style close tag with vertical tab": `<style>p{}</style\u000b><a href="x{background:url(https://evil)}">x</a>`,
   "style body with anchor": `<style><a href=https://x></style>`,
   "style unclosed": `<style>p{color:red}`,
   "title body with tag": `<title><a href="https://ok"></title>`,
@@ -283,12 +287,9 @@ test("assertNoRemoteResources allows cid:, data:, plain links, plain text", () =
     `<a\n  href="https://example.com/?a=1&amp;b=2" target="_blank">link</a>`,
     `<img src="logo.png">`, // relative: resolves nowhere remote, and <base> is refused
     `<p>Hello</p>`,
-    `<style>p{color:red}</style><a href="https://example.com">link</a>`,
-    `<style>p{color:red}</style><a href="https://example.com">x</a>`,
-    `<title>Hi</title>`,
     `<!DOCTYPE html><html><body><a href="https://example.com">x</a></body></html>`,
-    `<style>a</style >`,
-    `${"İ".repeat(5)}<style>a</STYLE><a href="https://ok">x</a>`, // exact index handling on non-ASCII text
+    `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><p style="color:red">x</p><a href="https://example.com">y</a></body></html>`,
+    `${"İ".repeat(5)}<a href="https://ok">x</a>`,
     `<img src="data:image/png;base64,AAAA">`,
     `<p>100% sure, %zz and %4 are just text</p>`, // malformed percent-sequences must not throw
   ]) {
