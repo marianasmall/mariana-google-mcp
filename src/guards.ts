@@ -103,19 +103,15 @@ function decodeEntitiesOnce(s: string): string {
       const cp = hex !== undefined ? parseInt(hex, 16) : parseInt(dec, 10);
       return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : "";
     }
-    return NAMED_ENTITIES[String(name).toLowerCase()] ?? m;
+    const lower = String(name).toLowerCase();
+    if (Object.hasOwn(NAMED_ENTITIES, lower)) return NAMED_ENTITIES[lower];
+    // Browsers also accept some entities without a semicolon, glued to following letters.
+    for (let k = lower.length - 1; k >= 2; k--) {
+      const head = lower.slice(0, k);
+      if (Object.hasOwn(NAMED_ENTITIES, head)) return NAMED_ENTITIES[head] + String(name).slice(k) + (m.endsWith(";") ? ";" : "");
+    }
+    return m;
   });
-}
-
-/** Decode HTML entities repeatedly, so double-encoded text cannot hide a scheme. */
-function decodeEntities(s: string): string {
-  let cur = s;
-  for (let i = 0; i < 4; i++) {
-    const next = decodeEntitiesOnce(cur);
-    if (next === cur) break;
-    cur = next;
-  }
-  return cur;
 }
 
 function decodeCssEscapes(s: string): string {
@@ -127,92 +123,164 @@ function decodeCssEscapes(s: string): string {
     .replace(/\\([^\n])/g, "$1");
 }
 
-// Characters browsers ignore or strip inside URLs, plus invisible lookalikes.
-const URL_NOISE = new RegExp(
-  "[\\u0000-\\u0020\\u007f-\\u00a0\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u2060\\ufeff]",
-  "g"
-);
-
 function remoteResourceError(): GuardError {
   return new GuardError(
-    "HTML drafts may not contain remote images, stylesheets or other remote resources: Gmail loads them as soon as the owner opens the draft, which tells the sender's server the draft was opened. " +
-      "Remove the remote images and styles (cid: and data: images are fine), or use the plain-text `body` instead. The owner can add images by hand in Gmail."
+    "HTML drafts may not contain remote images, stylesheets, URLs or other remote resources: Gmail loads them as soon as the owner opens the draft, which tells the sender's server the draft was opened. " +
+      "Wrap links as <a href>, remove images and styles from outside hosts, or use plain text. (cid: and data:image images are fine.)"
   );
 }
 
+const MAX_DECODE_PASSES = 5;
+
 /**
- * Refuse an HTML body that would fetch anything from the internet when the
- * draft is merely opened: src, srcset, background, poster and similar
- * attributes, href on non-anchor tags (link, image, use, base), CSS url(),
- * @import and image-set(). Plain <a href> links are fine, since they need a
- * click. Anything that is not cid:, data: (or empty / a #fragment) once
- * entities and CSS escapes are decoded is treated as remote. The one
- * exception is an https: URL whose host EXACTLY equals an entry of
- * `allowedImageHosts` (no subdomain wildcards, no http:). Fails closed.
+ * Decode until stable (entities, optionally CSS escapes), stripping NUL, tab, CR
+ * and LF, which URL parsers ignore. Returns null if the text is still changing
+ * after MAX_DECODE_PASSES, which the caller treats as a refusal.
+ */
+function normalizeStable(s: string, cssEscapes: boolean): string | null {
+  const pass = (t: string): string => {
+    let r = decodeEntitiesOnce(t);
+    if (cssEscapes) r = decodeCssEscapes(r);
+    return r.replace(/[\u0000\t\r\n]/g, "");
+  };
+  let cur = s;
+  for (let i = 0; i < MAX_DECODE_PASSES; i++) {
+    const next = pass(cur);
+    if (next === cur) return cur;
+    cur = next;
+  }
+  return pass(cur) === cur ? cur : null;
+}
+
+/**
+ * Find the value spans of `href` attributes on well-formed <a>/<area> tags.
+ * A tag only counts if a spec-style tokenizer sees it as a real tag AND its raw
+ * text matches <(a|area)\b[^<>]*> (it cannot contain another "<", and the first
+ * ">" ends it). A quoted value, or an unquoted value with no whitespace, quotes
+ * or ">", is a well-formed href value. Anything else is left in the residue.
+ */
+function findAnchorHrefSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const n = text.length;
+  const isWs = (c: string) => c === " " || c === "\f" || c === "\t" || c === "\n" || c === "\r";
+  let i = 0;
+  while (i < n) {
+    const lt = text.indexOf("<", i);
+    if (lt < 0 || lt + 1 >= n) break;
+    if (!/[a-z]/i.test(text[lt + 1])) {
+      i = lt + 1;
+      continue;
+    }
+    let j = lt + 1;
+    while (j < n && !isWs(text[j]) && text[j] !== "/" && text[j] !== ">") j++;
+    const tagName = text.slice(lt + 1, j).toLowerCase();
+    const hrefs: Array<{ vs: number; ve: number; quoted: boolean }> = [];
+    let closed = false;
+    while (j < n) {
+      while (j < n && (isWs(text[j]) || text[j] === "/")) j++;
+      if (j >= n) break;
+      if (text[j] === ">") {
+        closed = true;
+        j++;
+        break;
+      }
+      const ns = j;
+      j++; // the first character always belongs to the name, even "="
+      while (j < n && !isWs(text[j]) && text[j] !== "/" && text[j] !== ">" && text[j] !== "=") j++;
+      const attrName = text.slice(ns, j).toLowerCase();
+      let k = j;
+      while (k < n && isWs(text[k])) k++;
+      if (text[k] !== "=") continue;
+      k++;
+      while (k < n && isWs(text[k])) k++;
+      const q = text[k];
+      if (q === '"' || q === "'") {
+        const close = text.indexOf(q, k + 1);
+        if (close < 0) {
+          j = n;
+          break;
+        }
+        if (attrName === "href") hrefs.push({ vs: k + 1, ve: close, quoted: true });
+        j = close + 1;
+      } else {
+        let e = k;
+        while (e < n && !isWs(text[e]) && text[e] !== ">") e++;
+        if (attrName === "href") hrefs.push({ vs: k, ve: e, quoted: false });
+        j = e;
+      }
+    }
+    i = j;
+    if (!closed) break;
+    if (tagName !== "a" && tagName !== "area") continue;
+    if (!/^<(a|area)\b[^<>]*>$/i.test(text.slice(lt, j))) continue;
+    for (const h of hrefs) {
+      if (!h.quoted && /["'<>`=\s]/.test(text.slice(h.vs, h.ve))) continue;
+      spans.push([h.vs, h.ve]);
+    }
+  }
+  return spans;
+}
+
+// An https URL token; cut at quotes, brackets, parentheses, commas and backslashes.
+const HTTPS_TOKEN = /https:\/\/[^\s"'<>(),\\]+/gi;
+const CID_TOKEN = /cid:[^\s"'<>(),]*/gi;
+// data:image/<type;params>[,<payload>]; the payload cannot contain ":" so it cannot swallow a scheme.
+const DATA_IMAGE_TOKEN = /data:image\/[^\s"'<>(),]*(?:,[a-z0-9+/=]*)?/gi;
+
+/** Strip the ALLOWED URL spans; whatever is left is the residue. */
+function residueOf(text: string, hosts: Set<string>): string {
+  let out = "";
+  let pos = 0;
+  for (const [s, e] of findAnchorHrefSpans(text)) {
+    out += text.slice(pos, s);
+    pos = e;
+  }
+  out += text.slice(pos);
+  return out
+    .replace(CID_TOKEN, "")
+    .replace(DATA_IMAGE_TOKEN, "")
+    .replace(HTTPS_TOKEN, (m) => {
+      try {
+        const u = new URL(m);
+        return u.protocol === "https:" && !u.username && !u.password && hosts.has(u.hostname.toLowerCase()) ? "" : m;
+      } catch {
+        return m;
+      }
+    });
+}
+
+// Anything matching one of these in the residue is refused (case-insensitive).
+const RESIDUE_PATTERNS: RegExp[] = [
+  /https?:/i,
+  /\/\/\S/, // protocol-relative
+  /ftp:/i,
+  /url\s*\(\s*(?!(?:""|''|)\s*\))/i, // url( with anything but an empty argument
+  /@import/i,
+  /srcdoc/i,
+  /http-equiv/i,
+];
+
+/**
+ * Refuse an HTML body that could fetch (or hide) anything remote when the draft
+ * is merely opened. Residue rule: normalize (entities, CSS escapes, NUL/tab/CR/LF,
+ * looped until stable), remove ONLY the allowed URL spans (the href value of a
+ * well-formed <a>/<area> tag, cid: and data:image values, and https URLs whose
+ * host EXACTLY equals an `allowedImageHosts` entry), then refuse if ANY URL-like
+ * text is left: http(s):, ftp:, protocol-relative //, url(...), @import, srcdoc,
+ * http-equiv. Bare URLs in text are refused too. Fails closed.
  */
 export function assertNoRemoteResources(html: string, allowedImageHosts: string[] = []): void {
   const hosts = new Set(allowedImageHosts.map((h) => h.trim().toLowerCase()).filter(Boolean));
 
-  const urlOk = (raw: string): boolean => {
-    const v = decodeEntities(raw).replace(URL_NOISE, "");
-    if (v === "" || v.startsWith("#")) return true;
-    const lower = v.toLowerCase();
-    if (lower.startsWith("cid:") || lower.startsWith("data:")) return true;
-    if (lower.startsWith("https://")) {
-      try {
-        const u = new URL(v);
-        return u.protocol === "https:" && !u.username && !u.password && hosts.has(u.hostname.toLowerCase());
-      } catch {
-        return false;
-      }
-    }
-    return false;
-  };
-
-  const srcsetOk = (raw: string): boolean => {
-    const decoded = decodeEntities(raw);
-    // Check both as written and with tab/newline stripped (URL parsers drop them).
-    for (const text of [decoded, decoded.replace(/[\t\n\r\f\u0000]/g, "")]) {
-      for (const token of text.split(/\s+/)) {
-        if (token === "") continue;
-        const lower = token.toLowerCase();
-        if (lower.startsWith("data:") || lower.startsWith("cid:")) continue;
-        for (const piece of token.split(",")) {
-          if (piece === "" || /^\d+(\.\d+)?[wx]$/i.test(piece)) continue;
-          if (!urlOk(piece)) return false;
-        }
-      }
-    }
-    return true;
-  };
-
-  const URL_ATTRS = new Set(["src", "background", "poster", "lowsrc", "dynsrc", "data", "xlink:href", "action", "formaction", "ping", "manifest", "icon"]);
-  const tagRe = /<\s*([a-z][^\s/>]*)((?:"[^"]*"|'[^']*'|[^>"'])*)(?:>|$)/gi;
-  const attrRe = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
-  for (const tm of html.matchAll(tagRe)) {
-    const tag = tm[1].toLowerCase();
-    for (const am of tm[2].matchAll(attrRe)) {
-      const name = am[1].toLowerCase();
-      const value = am[2] ?? am[3] ?? am[4];
-      if (value === undefined) continue;
-      if (name === "srcset" || name === "imagesrcset") {
-        if (!srcsetOk(value)) throw remoteResourceError();
-      } else if (URL_ATTRS.has(name) || (name === "href" && tag !== "a" && tag !== "area")) {
-        if (!urlOk(value)) throw remoteResourceError();
-      }
-    }
-  }
-
-  // CSS anywhere (style attributes, <style> blocks): decode entities, then CSS escapes.
-  const css = decodeCssEscapes(decodeEntities(html));
-  for (const m of css.matchAll(/url\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))/gi)) {
-    if (!urlOk(m[1] ?? m[2] ?? m[3] ?? "")) throw remoteResourceError();
-  }
-  for (const m of css.matchAll(/@import\s*(?:url\s*\(\s*)?(?:"([^"]*)"|'([^']*)'|([^\s;)]*))/gi)) {
-    if (!urlOk(m[1] ?? m[2] ?? m[3] ?? "")) throw remoteResourceError();
-  }
-  for (const m of css.matchAll(/image-set\s*\(\s*(?:"([^"]*)"|'([^']*)')/gi)) {
-    if (!urlOk(m[1] ?? m[2] ?? "")) throw remoteResourceError();
+  // The residue is the authority. Two normalized views, each of which must come out clean:
+  // (1) entities + CSS escapes decoded; (2) entities only, with backslashes read as slashes
+  // (browsers treat "\\host" like "//host", and CSS decoding would eat the backslashes).
+  const decoded = normalizeStable(html, true);
+  const entityOnly = normalizeStable(html, false);
+  if (decoded === null || entityOnly === null) throw remoteResourceError();
+  for (const view of [decoded, entityOnly.replace(/\\/g, "/")]) {
+    const residue = residueOf(view, hosts);
+    if (RESIDUE_PATTERNS.some((re) => re.test(residue))) throw remoteResourceError();
   }
 }
 

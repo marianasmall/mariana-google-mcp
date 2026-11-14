@@ -207,15 +207,29 @@ const REMOTE_BYPASSES: Record<string, string> = {
   "base href": `<base href="https://evil.test/">`,
   "iframe src": `<iframe src="https://evil.test/"></iframe>`,
   "video poster": `<video poster="https://evil.test/a.png"></video>`,
-  "relative src (fail closed)": `<img src="logo.png">`,
   "unterminated tag": `<img src="https://evil.test/p.png"`,
+  // Residue-rule bypass regressions
+  "stray quote hides link tag": `<a title=x" ><link rel=stylesheet href=https://evil/a.css><a x=">`,
+  "srcdoc nested html": `<iframe srcdoc="&lt;img src=https://evil/x&gt;">`,
+  "image-set second string": `<div style="background:image-set(&quot;a.png&quot; 1x, &quot;https://evil/x&quot; 2x)"></div>`,
+  "image-set second string (single quotes)": `<div style='background:image-set("a.png" 1x, "https://evil/x" 2x)'></div>`,
+  "meta refresh": `<meta http-equiv=refresh content="0;url=https://evil">`,
+  "double-encoded bare scheme": `&amp;#104;ttps://evil`,
+  "css escape url bare": `url(\\68 ttps://evil)`,
+  "protocol-relative img unquoted": `<img src=//evil/x>`,
+  "bare url in text": `see https://evil.test/x`,
+  "fake anchor start inside unquoted attr": `<link x=<a href=https://evil/x>`,
+  "fake anchor inside quoted attr": `<link x='<a ' href=https://evil/x>`,
+  "link after a fake anchor": `<a href="https://example.com/"><link rel=stylesheet href=//evil/x>`,
+  "ftp scheme": `<img src="ftp://evil/x">`,
+  "import in text": `<style>@IMPORT 'x.css';</style>`,
 };
 
 for (const [name, html] of Object.entries(REMOTE_BYPASSES)) {
   test(`assertNoRemoteResources refuses: ${name}`, () => {
     assert.throws(
       () => guards.assertNoRemoteResources(`<p>hi</p>${html}`),
-      (e: any) => e instanceof guards.GuardError && /remote images/i.test(e.message) && /plain-text/.test(e.message) && /by hand/.test(e.message)
+      (e: any) => e instanceof guards.GuardError && /remote images/i.test(e.message) && /wrap links as <a href>/i.test(e.message) && /plain text/.test(e.message)
     );
   });
 }
@@ -231,6 +245,12 @@ test("assertNoRemoteResources allows cid:, data:, plain links, plain text", () =
     `<div style="color:red;background:url(data:image/png;base64,AAAA)"></div>`,
     `<div style="background:url(cid:bg)"></div>`,
     `<p>Tom &amp; Jerry &#169; 2026</p>`,
+    `<a href="https://example.com/page">link</a>`,
+    `<a href='https://example.com'>link</a>`,
+    `<a href=https://example.com/x>link</a>`,
+    `<a\n  href="https://example.com/?a=1&amp;b=2" target="_blank">link</a>`,
+    `<img src="logo.png">`, // relative: resolves nowhere remote, and <base> is refused
+    `<p>Hello</p>`,
   ]) {
     assert.doesNotThrow(() => guards.assertNoRemoteResources(html), html);
   }
@@ -255,6 +275,9 @@ test("assertNoRemoteResources allowedImageHosts: exact https host only", () => {
   ]) {
     assert.throws(() => guards.assertNoRemoteResources(`<img src="${bad}">`, allow), guards.GuardError, bad);
   }
+  const imgHost = ["images.example.com"];
+  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<img src="https://images.example.com/l.png">`, imgHost));
+  assert.throws(() => guards.assertNoRemoteResources(`<img src="https://images.example.com/l.png">`), guards.GuardError);
   // Default (no allowed hosts) still refuses.
   assert.throws(() => guards.assertNoRemoteResources(`<img src="https://example.com/logo.png">`), guards.GuardError);
   assert.throws(() => guards.assertNoRemoteResources(`<img srcset="https://example.com.evil.test/a.png 1x">`, allow), guards.GuardError);
