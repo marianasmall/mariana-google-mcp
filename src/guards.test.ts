@@ -222,6 +222,22 @@ const REMOTE_BYPASSES: Record<string, string> = {
   "fake anchor inside quoted attr": `<link x='<a ' href=https://evil/x>`,
   "link after a fake anchor": `<a href="https://example.com/"><link rel=stylesheet href=//evil/x>`,
   "ftp scheme": `<img src="ftp://evil/x">`,
+  "iframe tag": `<IFRAME></IFRAME>`,
+  "frame tag": `<frame>`,
+  "object tag": `<object data="x"></object>`,
+  "embed tag": `<EMBED>`,
+  "percent-encoded scheme": `<img src="%68ttps://evil">`,
+  "percent-encoded colon and slashes": `<img src="https%3A%2F%2Fevil/x">`,
+  "fullwidth scheme": `<img src="ｈｔｔｐｓ：／／evil/x">`,
+  "anchor inside style raw text": `<style>x{background:url(<a href="https://evil/x">)}</style>`,
+  "anchor inside comment": `<!-- <a href="https://evil"> -->`,
+  "anchor inside textarea": `<textarea><a href=https://evil></textarea>`,
+  "unquoted href with semicolon": `<a href=https://evil/x;y>`,
+  "anchor inside unclosed script": `<script><a href="https://evil">`,
+  "svg data percent-encoded": `<img src="data:image/svg+xml,%3Csvg%3E%3Cimage%20href=%27https%3A%2F%2Fevil%2Fx%27/%3E%3C/svg%3E">`,
+  "svg data base64": `<img src="data:image/svg+xml;base64,PHN2Zz48aW1hZ2UgaHJlZj0iaHR0cHM6Ly9ldmlsIi8+PC9zdmc+">`,
+  "text/html data base64 iframe": `<iframe src="data:text/html;base64,PGltZyBzcmM9aHR0cHM6Ly9ldmlsPg=="></iframe>`,
+  "raster data without base64": `<img src="data:image/png,AAAA">`,
   "import in text": `<style>@IMPORT 'x.css';</style>`,
 };
 
@@ -251,6 +267,9 @@ test("assertNoRemoteResources allows cid:, data:, plain links, plain text", () =
     `<a\n  href="https://example.com/?a=1&amp;b=2" target="_blank">link</a>`,
     `<img src="logo.png">`, // relative: resolves nowhere remote, and <base> is refused
     `<p>Hello</p>`,
+    `<style>p{color:red}</style><a href="https://example.com">link</a>`,
+    `<img src="data:image/png;base64,AAAA">`,
+    `<p>100% sure, %zz and %4 are just text</p>`, // malformed percent-sequences must not throw
   ]) {
     assert.doesNotThrow(() => guards.assertNoRemoteResources(html), html);
   }

@@ -137,11 +137,14 @@ const MAX_DECODE_PASSES = 5;
  * and LF, which URL parsers ignore. Returns null if the text is still changing
  * after MAX_DECODE_PASSES, which the caller treats as a refusal.
  */
-function normalizeStable(s: string, cssEscapes: boolean): string | null {
+function normalizeStable(s: string, cssEscapes: boolean, percent = false): string | null {
   const pass = (t: string): string => {
     let r = decodeEntitiesOnce(t);
     if (cssEscapes) r = decodeCssEscapes(r);
-    return r.replace(/[\u0000\t\r\n]/g, "");
+    // Malformed %-sequences are left alone (the regex only matches %XX).
+    if (percent) r = r.replace(/%([0-9a-f]{2})/gi, (_m, h) => String.fromCharCode(parseInt(h, 16)));
+    // NFKC folds fullwidth lookalikes (ｈｔｔｐｓ：／／) to ASCII so they cannot dodge the patterns.
+    return r.normalize("NFKC").replace(/[\u0000\t\r\n]/g, "");
   };
   let cur = s;
   for (let i = 0; i < MAX_DECODE_PASSES; i++) {
@@ -151,6 +154,8 @@ function normalizeStable(s: string, cssEscapes: boolean): string | null {
   }
   return pass(cur) === cur ? cur : null;
 }
+
+const RAW_TEXT_TAGS = new Set(["style", "script", "title", "textarea", "xmp", "noscript", "noembed", "noframes", "iframe", "plaintext"]);
 
 /**
  * Find the value spans of `href` attributes on well-formed <a>/<area> tags.
@@ -167,6 +172,12 @@ function findAnchorHrefSpans(text: string): Array<[number, number]> {
   while (i < n) {
     const lt = text.indexOf("<", i);
     if (lt < 0 || lt + 1 >= n) break;
+    if (text.startsWith("<!--", lt)) {
+      const endC = text.indexOf("-->", lt + 4);
+      if (endC < 0) break;
+      i = endC + 3;
+      continue;
+    }
     if (!/[a-z]/i.test(text[lt + 1])) {
       i = lt + 1;
       continue;
@@ -211,10 +222,18 @@ function findAnchorHrefSpans(text: string): Array<[number, number]> {
     }
     i = j;
     if (!closed) break;
+    if (RAW_TEXT_TAGS.has(tagName)) {
+      // Raw-text region: anything inside is not a real tag, so record no spans there.
+      if (tagName === "plaintext") break;
+      const close = text.toLowerCase().indexOf("</" + tagName, j);
+      if (close < 0) break;
+      i = close;
+      continue;
+    }
     if (tagName !== "a" && tagName !== "area") continue;
     if (!/^<(a|area)\b[^<>]*>$/i.test(text.slice(lt, j))) continue;
     for (const h of hrefs) {
-      if (!h.quoted && /["'<>`=\s]/.test(text.slice(h.vs, h.ve))) continue;
+      if (!h.quoted && /["'<>`=\s{}();]/.test(text.slice(h.vs, h.ve))) continue;
       spans.push([h.vs, h.ve]);
     }
   }
@@ -224,8 +243,9 @@ function findAnchorHrefSpans(text: string): Array<[number, number]> {
 // An https URL token; cut at quotes, brackets, parentheses, commas and backslashes.
 const HTTPS_TOKEN = /https:\/\/[^\s"'<>(),\\]+/gi;
 const CID_TOKEN = /cid:[^\s"'<>(),]*/gi;
-// data:image/<type;params>[,<payload>]; the payload cannot contain ":" so it cannot swallow a scheme.
-const DATA_IMAGE_TOKEN = /data:image\/[^\s"'<>(),]*(?:,[a-z0-9+/=]*)?/gi;
+// Raster, base64-only data images. SVG, text/html, percent-encoded and every other data: form is
+// not an allowed span and is refused by RESIDUE_PATTERNS. The payload charset has no ":".
+const DATA_IMAGE_TOKEN = /data:image\/(?:png|jpe?g|gif|webp);base64,[a-z0-9+/=]*/gi;
 
 /** Strip the ALLOWED URL spans; whatever is left is the residue. */
 function residueOf(text: string, hosts: Set<string>): string {
@@ -258,6 +278,8 @@ const RESIDUE_PATTERNS: RegExp[] = [
   /@import/i,
   /srcdoc/i,
   /http-equiv/i,
+  /<\s*(?:i?frame|frameset|object|embed)\b/i, // drafts never need embedded documents
+  /data:(?!image\/(?:png|jpe?g|gif|webp);base64,)/i, // any data: form except raster base64 images
 ];
 
 /**
@@ -277,8 +299,10 @@ export function assertNoRemoteResources(html: string, allowedImageHosts: string[
   // (browsers treat "\\host" like "//host", and CSS decoding would eat the backslashes).
   const decoded = normalizeStable(html, true);
   const entityOnly = normalizeStable(html, false);
-  if (decoded === null || entityOnly === null) throw remoteResourceError();
-  for (const view of [decoded, entityOnly.replace(/\\/g, "/")]) {
+  const pctDecoded = normalizeStable(html, true, true); // third view: %XX decoded too
+  if (decoded === null || entityOnly === null || pctDecoded === null) throw remoteResourceError();
+  // The raw HTML is checked as well, so a payload that normalization mangles cannot hide.
+  for (const view of [decoded, entityOnly.replace(/\\/g, "/"), pctDecoded, html]) {
     const residue = residueOf(view, hosts);
     if (RESIDUE_PATTERNS.some((re) => re.test(residue))) throw remoteResourceError();
   }
