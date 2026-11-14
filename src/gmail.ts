@@ -852,7 +852,7 @@ export function registerGmailTools(server: McpServer): void {
         content: [
           {
             type: "text" as const,
-            text: `Moved ${moved} message(s) to "To Be Deleted" label. Review in Gmail before permanently deleting.`,
+            text: `Moved ${moved} message(s) to "To Be Deleted" label. Review in Gmail before deleting them yourself.`,
           },
         ],
       };

@@ -26,7 +26,7 @@ test("gmail_draft attachments description names default roots and refusals", () 
   assert.ok(desc.includes("attachmentRoots"));
   assert.match(desc, /hidden/i);
   assert.match(desc, /credential/i);
-  assert.ok(!desc.includes("/Users/"));
+  assert.doesNotMatch(desc, /\/Users\//);
 });
 
 test("gmail_draft rejects CR/LF in to/cc/bcc before any network call", async () => {
@@ -70,10 +70,10 @@ test("gmail_delete_draft has no permanent option and does not mention permanent 
 
 test("gmail_apply_label refuses TRASH and SPAM before any Google call", async () => {
   const t = setup().get("gmail_apply_label");
-  for (const label_id of ["TRASH", "SPAM"]) {
+  for (const label_id of ["TRASH", "SPAM", "trash", "Spam"]) {
     const res = await t.handler({ message_ids: ["m1"], label_id });
     assert.equal(res.isError, true, label_id);
-    assert.match(res.content[0].text, new RegExp(label_id));
+    assert.match(res.content[0].text, new RegExp(label_id.toUpperCase()));
   }
 });
 

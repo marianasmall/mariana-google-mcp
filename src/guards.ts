@@ -93,8 +93,9 @@ export function assertNoCRLF(field: string, value: string | undefined): void {
 
 export function assertSafeAddLabels(ids: string[]): void {
   for (const id of ids) {
-    if (id === "TRASH" || id === "SPAM") {
-      throw new GuardError(`Adding the ${id} label is not allowed. Apply a normal label instead, or ask the user to trash or spam the message themselves.`);
+    const up = id.toUpperCase();
+    if (up === "TRASH" || up === "SPAM") {
+      throw new GuardError(`Adding the ${up} label is not allowed. Apply a normal label instead, or ask the user to trash or spam the message themselves.`);
     }
   }
 }
