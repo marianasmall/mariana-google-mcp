@@ -229,7 +229,8 @@ function findAnchorHrefSpans(text: string): Array<[number, number]> {
     if (tagName !== "a" && tagName !== "area") continue;
     if (!/^<(a|area)\b[^<>]*>$/i.test(text.slice(lt, j))) continue;
     for (const h of hrefs) {
-      if (!h.quoted && /["'<>`=\s{}();]/.test(text.slice(h.vs, h.ve))) continue;
+      const value = text.slice(h.vs, h.ve);
+      if (h.quoted ? /[<>]/.test(value) : /["'<>`=\s{}();]/.test(value)) continue;
       spans.push([h.vs, h.ve]);
     }
   }
@@ -275,6 +276,7 @@ const RESIDUE_PATTERNS: RegExp[] = [
   /srcdoc/i,
   /http-equiv/i,
   /<\s*(?:i?frame|frameset|object|embed)\b/i, // drafts never need embedded documents
+  /<\s*[!?]|<\/(?![a-z])/i, // bogus comments (<!x, <?, </ + non-letter); the one allowed doctype is stripped first
   /<!--|<\s*(?:svg|math|script|noscript|xmp|plaintext|noembed|noframes|template|textarea)\b/i, // ambiguous parsing contexts
   /data:(?!image\/(?:png|jpe?g|gif|webp);base64,)/i, // any data: form except raster base64 images
 ];
@@ -300,7 +302,8 @@ export function assertNoRemoteResources(html: string, allowedImageHosts: string[
   if (decoded === null || entityOnly === null || pctDecoded === null) throw remoteResourceError();
   // The raw HTML is checked as well, so a payload that normalization mangles cannot hide.
   for (const view of [decoded, entityOnly.replace(/\\/g, "/"), pctDecoded, html]) {
-    const residue = residueOf(view, hosts);
+    // Exactly one leading doctype is allowed; anywhere else it is a bogus comment and is refused.
+    const residue = residueOf(view.replace(/^\s*<!doctype\s+html[^<>]*>/i, ""), hosts);
     if (RESIDUE_PATTERNS.some((re) => re.test(residue))) throw remoteResourceError();
   }
 }
