@@ -61,10 +61,24 @@ test("gmail_draft and gmail_update_draft refuse remote resources in html before 
   const html = `<p>hi</p><img src="https://evil.test/pixel.png">`;
   const d = await cap.get("gmail_draft").handler({ to: "a@example.com", subject: "s", html });
   assert.equal(d.isError, true);
-  assert.match(d.content[0].text, /remote images/i);
+  assert.match(d.content[0].text, /HTML drafts allow basic formatting only/);
+  assert.match(d.content[0].text, /<img src>/);
   const u = await cap.get("gmail_update_draft").handler({ draft_id: "d1", html });
   assert.equal(u.isError, true);
-  assert.match(u.content[0].text, /remote images/i);
+  assert.match(u.content[0].text, /HTML drafts allow basic formatting only/);
+});
+
+test("gmail_draft and gmail_update_draft send only the sanitizer's returned html, never the input", async () => {
+  const src = await fs.readFile(new URL("./gmail.js", import.meta.url), "utf8");
+  assert.equal(src.match(/safeHtml = sanitizeDraftHtml\(html, /g)?.length, 2);
+  assert.match(src, /const content = safeHtml \?\? body;/);
+  assert.match(src, /finalContent = safeHtml;/);
+  // After the guard, the raw `html` argument is never read again.
+  const bodies = src.split(/safeHtml = sanitizeDraftHtml\(html, [^\n]*\n/).slice(1);
+  for (const rest of bodies) {
+    const handlerTail = rest.split(/server\.tool\(/)[0];
+    assert.doesNotMatch(handlerTail, /(?<![\w/])html\b(?!Part)/, "raw html used after sanitizing");
+  }
 });
 
 // --- readAttachmentGuarded ---

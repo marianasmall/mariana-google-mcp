@@ -4,15 +4,30 @@
   "description": "Custom MCP server for Gmail, Calendar, and Contacts with safety-first defaults",
   "type": "module",
   "main": "dist/index.js",
-  "bin": {"mariana-google-mcp": "dist/index.js"},
-  "scripts": {"build": "tsc", "start": "node dist/index.js", "dev": "tsc --watch", "test": "tsc && node --test \"dist/**/*.test.js\""},
-  "keywords": ["mcp", "google", "gmail", "calendar", "contacts", "claude-code"],
+  "bin": {
+    "mariana-google-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "test": "tsc && node --test \"dist/**/*.test.js\""
+  },
+  "keywords": [
+    "mcp",
+    "google",
+    "gmail",
+    "calendar",
+    "contacts",
+    "claude-code"
+  ],
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "google-auth-library": "^10.6.2",
     "googleapis": "^171.4.0",
     "open": "^10.0.0",
+    "parse5": "8.0.1",
     "zod": "^3.25.0"
   },
   "devDependencies": {

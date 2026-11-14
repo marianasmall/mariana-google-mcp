@@ -6,7 +6,8 @@ import * as path from "path";
 import { getAuthClient } from "./auth.js";
 import { logAction, withWriteLogging } from "./logger.js";
 import * as os from "os";
-import { GuardError, assertSafeAddLabels, assertNoCRLF, assertNoRemoteResources, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
+import { GuardError, assertSafeAddLabels, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
+import { sanitizeDraftHtml } from "./htmlGuard.js";
 import { loadConfig, getAllowedImageHosts, getAttachmentRoots, getConfigDir, getTokensDir } from "./config.js";
 
 function guardErrorResult(err: unknown) {
@@ -299,7 +300,7 @@ export function registerGmailTools(rawServer: McpServer): void {
         .string()
         .optional()
         .describe(
-          "Optional HTML body (tables, bold, links). PREFER this whenever the content has structure — figures, comparisons, per-person breakdowns, lists of accounts — a formatted draft reads better than plain text. Plain text is fine for short conversational notes. When provided it is used instead of the plain-text body, which then serves only as a fallback description."
+          "Optional HTML body (tables, bold, links). PREFER this whenever the content has structure — figures, comparisons, per-person breakdowns, lists of accounts — a formatted draft reads better than plain text. Plain text is fine for short conversational notes. When provided it is used instead of the plain-text body, which then serves only as a fallback description. Basic formatting only: p, div, span, b/i/u, headings, lists, tables, <a href> (http/https/mailto/tel), inline style for color/font/spacing/borders, images only cid:, base64 data:image or allowedImageHosts. No <style>, scripts, forms or CSS url()."
         ),
       cc: z.string().optional().describe("CC recipients (comma-separated)"),
       bcc: z.string().optional().describe("BCC recipients (comma-separated)"),
@@ -326,12 +327,14 @@ export function registerGmailTools(rawServer: McpServer): void {
     async ({ to, subject, body, html, cc, bcc, attachments, reply_to_message_id, thread_id, account }) => {
       // Guards run before any network or auth work.
       const loaded: { filePath: string; data: Buffer }[] = [];
+      // Only the re-serialized output of the allowlist validator is ever sent, never `html` itself.
+      let safeHtml: string | undefined;
       try {
         assertNoCRLF("to", to);
         assertNoCRLF("cc", cc);
         assertNoCRLF("bcc", bcc);
         const config = await loadConfig();
-        if (html) assertNoRemoteResources(html, getAllowedImageHosts(config));
+        if (html) safeHtml = sanitizeDraftHtml(html, { allowedImageHosts: getAllowedImageHosts(config) });
         if (attachments && attachments.length > 0) {
           const roots = getAttachmentRoots(config);
           const forbidden = [
@@ -373,10 +376,10 @@ export function registerGmailTools(rawServer: McpServer): void {
       const effectiveThreadId = replyCtx?.threadId ?? thread_id;
       const effectiveSubject = replyCtx ? replySubject(replyCtx.subject, subject) : subject;
 
-      const contentType = html
+      const contentType = safeHtml
         ? "Content-Type: text/html; charset=utf-8"
         : "Content-Type: text/plain; charset=utf-8";
-      const content = html ?? body;
+      const content = safeHtml ?? body;
       const baseHeaders = [
         `To: ${to}`,
         `Subject: ${encodeHeaderValue(effectiveSubject)}`,
@@ -526,11 +529,13 @@ export function registerGmailTools(rawServer: McpServer): void {
       account: z.string().optional().describe("Account name (default: primary)"),
     },
     async ({ draft_id, to, subject, body, html, cc, bcc, account }) => {
+      // Only the re-serialized output of the allowlist validator is ever sent, never `html` itself.
+      let safeHtml: string | undefined;
       try {
         assertNoCRLF("to", to);
         assertNoCRLF("cc", cc);
         assertNoCRLF("bcc", bcc);
-        if (html) assertNoRemoteResources(html, getAllowedImageHosts(await loadConfig()));
+        if (html) safeHtml = sanitizeDraftHtml(html, { allowedImageHosts: getAllowedImageHosts(await loadConfig()) });
       } catch (err) {
         const r = guardErrorResult(err);
         if (r) return r;
@@ -577,8 +582,8 @@ export function registerGmailTools(rawServer: McpServer): void {
 
       let finalContent: string;
       let isHtml: boolean;
-      if (html) {
-        finalContent = html;
+      if (safeHtml) {
+        finalContent = safeHtml;
         isHtml = true;
       } else if (body) {
         finalContent = body;

@@ -261,65 +261,266 @@ const REMOTE_BYPASSES: Record<string, string> = {
   "import in text": `<style>@IMPORT 'x.css';</style>`,
 };
 
-for (const [name, html] of Object.entries(REMOTE_BYPASSES)) {
-  test(`assertNoRemoteResources refuses: ${name}`, () => {
-    assert.throws(
-      () => guards.assertNoRemoteResources(`<p>hi</p>${html}`),
-      (e: any) => e instanceof guards.GuardError && /remote images/i.test(e.message) && /wrap links as <a href>/i.test(e.message) && /plain text/.test(e.message)
-    );
+// ---------------------------------------------------------------------------
+// sanitizeDraftHtml: parse5 allowlist validator + re-serializer
+// ---------------------------------------------------------------------------
+
+const { sanitizeDraftHtml } = await import("./htmlGuard.js");
+const parse5 = await import("parse5");
+
+const HELP_RE = /HTML drafts allow basic formatting only: wrap links in <a href>, use inline style for color\/font\/spacing, images only cid:\/data:\/allowed hosts\./;
+
+// Independent oracle: a second copy of the allowlist, so a typo in the guard cannot also hide in the check.
+const ORACLE_ELEMENTS = new Set(
+  "html head body meta p br div span b strong i em u s small sub sup blockquote pre code h1 h2 h3 h4 h5 h6 ul ol li hr a img table thead tbody tfoot tr td th caption colgroup col center font".split(" ")
+);
+const ORACLE_GLOBAL_ATTRS = new Set(
+  "dir align valign width height colspan rowspan cellpadding cellspacing border bgcolor color face size title alt lang style".split(" ")
+);
+
+function isGuardRefusal(e: unknown): boolean {
+  return e instanceof GuardError && HELP_RE.test((e as Error).message) && /^HTML draft refused: .+ is not allowed\./.test((e as Error).message);
+}
+
+/**
+ * Property check on sanitizer OUTPUT: re-parse it with parse5 and assert that every node is
+ * inside the allowlist, no attribute other than a@href can name a remote URL, img src is
+ * cid:/data:image/allowed https host only, and style holds nothing that can fetch.
+ */
+function assertOutputClean(out: string, hosts: string[] = []): void {
+  const hostSet = new Set(hosts.map((h) => h.toLowerCase()));
+  const visit = (node: any): void => {
+    for (const c of node.childNodes ?? []) {
+      assert.notEqual(c.nodeName, "#comment", `comment survived in ${out}`);
+      assert.notEqual(c.nodeName, "#documentType", `doctype survived in ${out}`);
+      if (c.tagName) {
+        assert.equal(c.namespaceURI, "http://www.w3.org/1999/xhtml", `foreign element in ${out}`);
+        assert.ok(ORACLE_ELEMENTS.has(c.tagName), `element <${c.tagName}> in ${out}`);
+        for (const a of c.attrs) {
+          const tag = c.tagName;
+          if (tag === "meta") {
+            assert.equal(a.name, "charset", `meta attr ${a.name} in ${out}`);
+          } else if (tag === "a" && a.name === "href") {
+            assert.match(new URL(a.value).protocol, /^(https?|mailto|tel):$/, `href ${a.value}`);
+            continue;
+          } else if (tag === "a" && (a.name === "target" || a.name === "rel")) {
+            // allowed
+          } else if (tag === "img" && a.name === "src") {
+            const ok =
+              /^cid:/i.test(a.value) ||
+              /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/i.test(a.value) ||
+              (/^https:\/\//i.test(a.value) && hostSet.has(new URL(a.value).hostname));
+            assert.ok(ok, `img src ${a.value} in ${out}`);
+            continue;
+          } else {
+            assert.ok(ORACLE_GLOBAL_ATTRS.has(a.name), `attribute ${a.name} on <${tag}> in ${out}`);
+          }
+          if (a.name === "style") {
+            assert.doesNotMatch(a.value, /url|image|@|\\|\/\*|expression|[<>\n\r]/i, `style ${a.value}`);
+            assert.doesNotMatch(a.value.replace(/rgba?\([0-9.,%\s]*\)/gi, ""), /\(/, `style paren ${a.value}`);
+          }
+          assert.doesNotMatch(a.value, /https?:|ftp:|\/\//i, `URL in ${tag}@${a.name} in ${out}`);
+        }
+      }
+      visit(c.content ?? c); // template content (never allowed, but walk it if present)
+    }
+  };
+  visit(parse5.parse(out));
+}
+
+/** Serialized output with every <a ...> start tag removed: what is left must not mention http. */
+function noHttpOutsideAnchors(out: string): boolean {
+  return !/http/i.test(out.replace(/<a\s[^>]*>/gi, ""));
+}
+
+/** Either refuses with the standard GuardError, or returns output that passes the property check. */
+function refusedOrClean(html: string, hosts: string[] = []): { refused: boolean; out?: string } {
+  let out: string;
+  try {
+    out = sanitizeDraftHtml(html, { allowedImageHosts: hosts });
+  } catch (e) {
+    assert.ok(isGuardRefusal(e), `unexpected error for ${html}: ${e}`);
+    return { refused: true };
+  }
+  assertOutputClean(out, hosts);
+  return { refused: false, out };
+}
+
+// The two payloads an independent review proved in real Chromium against the old residue guard.
+const PROVEN_PAYLOADS: Record<string, string> = {
+  "a style= entity href smuggle (https)": `<a style=x&#32;href=&quot;&#10;;background:u&#114;l&#40;h&#116;tps&#58;&#47;&#47;evil.example/x&#41;;&quot;>hi</a>`,
+  "a style= entity href smuggle (http)": `<a style=x&#32;href=&quot;&#10;;background:u&#114;l&#40;h&#116;tp&#58;&#47;&#47;evil.test/astyle&#41;;&quot;>hi</a>`,
+  "a style= image-set smuggle": `<a style=x&#32;href=&quot;&#10;;background-image:image-set&#40;&quot;h&#116;tp&#58;&#47;&#47;evil.test/imgset&quot;&#32;1x&#41;;&quot;>z</a>`,
+  "div style= bad-string smuggle": `<div style=&gt;&lt;a&#32;href=&quot;&#10;;background:u&#114;l&#40;h&#116;tp&#58;&#47;&#47;evil.test/badstring&#41;;x:&quot;&gt;>hi</div>`,
+};
+
+for (const [name, html] of Object.entries(PROVEN_PAYLOADS)) {
+  test(`sanitizeDraftHtml refuses proven payload: ${name}`, () => {
+    assert.throws(() => sanitizeDraftHtml(html, { allowedImageHosts: [] }), isGuardRefusal);
   });
 }
 
-test("assertNoRemoteResources allows cid:, data:, plain links, plain text", () => {
-  for (const html of [
-    `<p>Hello <b>there</b></p>`,
-    `<img src="cid:logo123">`,
-    `<img src="data:image/png;base64,//8AAA==">`,
-    `<img srcset="data:image/png;base64,AAAA 1x, cid:b 2x">`,
-    `<a href="https://example.com/page">click</a>`,
-    `<a href='http://example.com'>click</a>`,
-    `<div style="color:red;background:url(data:image/png;base64,AAAA)"></div>`,
-    `<div style="background:url(cid:bg)"></div>`,
-    `<p>Tom &amp; Jerry &#169; 2026</p>`,
-    `<a href="https://example.com/page">link</a>`,
-    `<a href='https://example.com'>link</a>`,
-    `<a href=https://example.com/x>link</a>`,
-    `<a\n  href="https://example.com/?a=1&amp;b=2" target="_blank">link</a>`,
-    `<img src="logo.png">`, // relative: resolves nowhere remote, and <base> is refused
-    `<p>Hello</p>`,
-    `<!DOCTYPE html><html><body><a href="https://example.com">x</a></body></html>`,
-    `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><p style="color:red">x</p><a href="https://example.com">y</a></body></html>`,
-    `${"İ".repeat(5)}<a href="https://ok">x</a>`,
-    `<img src="data:image/png;base64,AAAA">`,
-    `<p>100% sure, %zz and %4 are just text</p>`, // malformed percent-sequences must not throw
-  ]) {
-    assert.doesNotThrow(() => guards.assertNoRemoteResources(html), html);
+// Every earlier bypass class: refused, or neutralized (output re-parses clean).
+for (const [name, html] of Object.entries(REMOTE_BYPASSES)) {
+  test(`sanitizeDraftHtml refuses or neutralizes: ${name}`, () => {
+    refusedOrClean(`<p>hi</p>${html}`);
+  });
+}
+
+test("sanitizeDraftHtml refuses each named bypass class, naming the offender", () => {
+  const cases: Array<[string, RegExp]> = [
+    [`<iframe srcdoc="&lt;img src=https://evil.test/x&gt;"></iframe>`, /<iframe> element/],
+    [`<div style="background:image-set('https://evil.test/a.png' 1x)"></div>`, /image in style/],
+    [`<p style='color:red;background:image-set("a.png" 1x, "https://evil.test/x" 2x)'>x</p>`, /image in style/],
+    [`<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=">`, /<img src>/],
+    [`<img src="data:image/svg+xml,%3Csvg%3E%3C/svg%3E">`, /<img src>/],
+    [`<style>p{color:red}</style><p>x</p>`, /<style> element/],
+    [`<link rel="stylesheet" href="https://evil.test/a.css">`, /<link> element/],
+    [`<base href="https://evil.test/"><img src="x.png">`, /<base> element/],
+    [`<meta http-equiv="refresh" content="0;url=https://evil.test">`, /<meta http-equiv>/],
+    [`<iframe src="https://evil.test/"></iframe>`, /<iframe> element/],
+    [`<style>p{}</style ><a href="x{background:url(https://evil.test)}">x</a>`, /<style> element/],
+    [`<svg><image href="https://evil.test/a.png"/></svg>`, /<svg> element/],
+    [`<math><mi>x</mi></math>`, /<math> element/],
+    [`<img src="https://evil.test/p.png">`, /<img src>/],
+    [`<img src="cid:a" srcset="https://evil.test/b.png 2x">`, /srcset attribute on <img>/],
+    [`<img src="cid:a" onerror="fetch('https://evil.test')">`, /onerror attribute on <img>/],
+    [`<table background="https://evil.test/b.png"></table>`, /background attribute on <table>/],
+    [`<p class="x">y</p>`, /class attribute on <p>/],
+    [`<a href="javascript:alert(1)">x</a>`, /link scheme javascript:/],
+    [`<a href="data:text/html,hi">x</a>`, /link scheme data:/],
+    [`<a href="#top">x</a>`, /<a href> that is not an absolute/],
+    [`<a href="https://example.com" ping="https://evil.test">x</a>`, /ping attribute on <a>/],
+    [`<p style="background:red">x</p>`, /CSS property background/],
+    [`<p style="border-image-source:none">x</p>`, /image in style/],
+    [`<p style="position:absolute">x</p>`, /CSS property position/],
+    [`<p style="color:var(--x)">x</p>`, /value of CSS property color/],
+    [`<p style="color:red/**/">x</p>`, /a comment in style/],
+    [`<p style="color:r\\65 d">x</p>`, /a backslash in style/],
+    [`<p style="color:red&#10;">x</p>`, /line break or control character in style/],
+    [`<p style="behavior:x">x</p>`, /CSS property behavior/],
+    [`<p style="color:red;;foo">x</p>`, /CSS declaration/],
+    [`<font face="Arial" style="font-size:12px" onclick="x">x</font>`, /onclick attribute on <font>/],
+  ];
+  for (const [html, offender] of cases) {
+    assert.throws(
+      () => sanitizeDraftHtml(html, { allowedImageHosts: [] }),
+      (e: any) => isGuardRefusal(e) && offender.test(e.message),
+      html
+    );
   }
 });
 
-test("assertNoRemoteResources allowedImageHosts: exact https host only", () => {
-  const allow = ["Example.com"];
-  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<img src="https://example.com/logo.png">`, allow));
-  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<img src="HTTPS://EXAMPLE.COM/logo.png">`, allow));
-  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<div style="background:url('https://example.com/b.png')"></div>`, allow));
-  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<img srcset="https://example.com/a.png 1x, cid:b 2x">`, allow));
-  for (const bad of [
-    "https://example.com.evil.test/logo.png",
-    "https://evil-example.com/logo.png",
-    "https://images.example.com/logo.png",
-    "https://evil.test/https://example.com/logo.png",
-    "https://example.com@evil.test/logo.png",
-    "https://evil.test@example.com/logo.png",
-    "http://example.com/logo.png",
-    "//example.com/logo.png",
-    "https://example.com.@evil.test/x.png",
+test("sanitizeDraftHtml drops comments, bogus comments and stray doctypes (no http survives outside a@href)", () => {
+  for (const html of [
+    `<!-- <img src="https://evil.test/x"> --><p>x</p>`,
+    `<!--[if mso]><img src="https://evil.test/x"><![endif]--><p>y</p>`,
+    `<!-- x --!><p>z</p>`,
+    `<!--><p>a</p>`,
+    `<!---><p>b</p>`,
+    `<!x <img src="https://evil.test/x">>`,
+    `<?php <img src="https://evil.test/x"> ?>`,
+    `</ <img src="https://evil.test/x">>`,
+    `<p>x</p><!DOCTYPE html><a href="https://example.com">x</a>`,
+    `<!-- <a href="https://evil.test"> -->`,
   ]) {
-    assert.throws(() => guards.assertNoRemoteResources(`<img src="${bad}">`, allow), guards.GuardError, bad);
+    const r = refusedOrClean(html);
+    assert.equal(r.refused, false, html);
+    assert.ok(noHttpOutsideAnchors(r.out!), `${html} -> ${r.out}`);
+    assert.doesNotMatch(r.out!, /<!/, `${html} -> ${r.out}`);
   }
-  const imgHost = ["images.example.com"];
-  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<img src="https://images.example.com/l.png">`, imgHost));
-  assert.throws(() => guards.assertNoRemoteResources(`<img src="https://images.example.com/l.png">`), guards.GuardError);
-  // Default (no allowed hosts) still refuses.
-  assert.throws(() => guards.assertNoRemoteResources(`<img src="https://example.com/logo.png">`), guards.GuardError);
-  assert.throws(() => guards.assertNoRemoteResources(`<img srcset="https://example.com.evil.test/a.png 1x">`, allow), guards.GuardError);
 });
+
+const ALLOWED_INPUTS: string[] = [
+  `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><p style="color:#333">Hello</p></body></html>`,
+  `<div style="font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #222">
+     <h2 style="margin: 0 0 8px 0; font-weight: bold">Quarterly numbers</h2>
+     <p>Hi team, <b>three</b> things, <i>briefly</i>:</p>
+     <ul style="list-style-type: disc; padding-left: 20px"><li>One</li><li><u>Two</u></li><li><s>Three</s></li></ul>
+     <table border="0" cellpadding="6" cellspacing="0" width="100%" style="border-collapse: collapse; border: 1px solid #ccc">
+       <thead><tr><th align="left" style="background-color: rgb(240, 240, 240); padding: 6px 10px">Item</th><th>Amount</th></tr></thead>
+       <tbody><tr><td style="padding: 6px 10px; border-bottom: 1px solid #eee">Widgets</td><td align="right" bgcolor="#fafafa">$1,200</td></tr></tbody>
+       <tfoot><tr><td colspan="2" style="text-align: right; font-style: italic; color: rgba(0,0,0,0.6)">Total</td></tr></tfoot>
+     </table>
+     <p>Details: <a href="https://example.com" target="_blank" rel="noopener">https://example.com</a></p>
+     <p>Mail <a href="mailto:someone@example.com">someone@example.com</a> or call <a href="tel:+15550100">555-0100</a>.</p>
+     <blockquote style="border-left: 3px solid #ddd; margin: 0; padding-left: 10px">Quoted text</blockquote>
+     <pre><code>code sample</code></pre><hr><center><font face="Arial" color="#555" size="2">small print</font></center>
+   </div>`,
+  `<p>Logo: <img src="cid:logo123" alt="Logo" width="80" height="20"></p>`,
+  `<img src="data:image/png;base64,iVBORw0KGgo=" alt="pixel">`,
+  `<p>See https://example.com/bare for more, 5 &lt; 6 &amp; done.</p>`,
+  `<p style="font-weight: bold !important; display: inline-block; white-space: nowrap; vertical-align: top; max-width: 600px; min-width: 100px; border-radius: 4px; letter-spacing: 0.5px; text-decoration: underline; margin-top: 4px; padding-right: 2px; border-left-color: red; border-top: 1px dashed #000">x</p>`,
+  `<p>Tom &amp; Jerry &#169; 2026, 100% sure</p>`,
+  `<table><caption>Cap</caption><colgroup><col width="50%"><col></colgroup><tr><td rowspan="2" valign="top" dir="rtl" lang="ar" title="t">x</td></tr></table>`,
+  `<p>sub<sub>1</sub> sup<sup>2</sup> <small>s</small> <em>e</em> <strong>s</strong> <span>sp</span><br>end</p><h1>a</h1><h6>b</h6><ol><li>x</li></ol>`,
+];
+
+test("sanitizeDraftHtml allows and round-trips normal formatted email", () => {
+  for (const html of ALLOWED_INPUTS) {
+    const r = refusedOrClean(html);
+    assert.equal(r.refused, false, html);
+    // Re-sanitizing the output is a fixed point: the serialized tree re-parses to the same tree.
+    assert.equal(sanitizeDraftHtml(r.out!, { allowedImageHosts: [] }), r.out, html);
+  }
+  const out = sanitizeDraftHtml(ALLOWED_INPUTS[1], { allowedImageHosts: [] });
+  assert.match(out, /<a href="https:\/\/example\.com" target="_blank" rel="noopener">https:\/\/example\.com<\/a>/);
+  assert.match(out, /<table border="0" cellpadding="6"/);
+  assert.match(out, /style="padding: 6px 10px; border-bottom: 1px solid #eee"/);
+  assert.match(out, /color: rgba\(0,0,0,0\.6\)/);
+  assert.match(sanitizeDraftHtml(ALLOWED_INPUTS[2], { allowedImageHosts: [] }), /<img src="cid:logo123" alt="Logo" width="80" height="20">/);
+  assert.match(sanitizeDraftHtml(ALLOWED_INPUTS[3], { allowedImageHosts: [] }), /<img src="data:image\/png;base64,iVBORw0KGgo=" alt="pixel">/);
+  const doc = sanitizeDraftHtml(ALLOWED_INPUTS[0], { allowedImageHosts: [] });
+  assert.equal(doc, `<html><head><meta charset="utf-8"></head><body><p style="color:#333">Hello</p></body></html>`);
+  // Entities come back escaped, never as live markup.
+  assert.match(sanitizeDraftHtml(ALLOWED_INPUTS[4], { allowedImageHosts: [] }), /5 &lt; 6 &amp; done/);
+});
+
+test("sanitizeDraftHtml allowedImageHosts: exact https host only", () => {
+  const allow = ["Images.Example.com"];
+  for (const ok of ["https://images.example.com/l.png", "HTTPS://IMAGES.EXAMPLE.COM/l.png", "https://images.example.com/a/b.png?x=1#f"]) {
+    const r = refusedOrClean(`<img src="${ok}">`, allow.map((h) => h.toLowerCase()));
+    assert.equal(r.refused, false, ok);
+  }
+  for (const bad of [
+    "https://images.example.com:443/l.png",
+    "https://images.example.com:8443/l.png",
+    "https://user@images.example.com/l.png",
+    "https://user:pw@images.example.com/l.png",
+    "https://images.example.com./l.png",
+    "https://images.example.com.evil.test/l.png",
+    "https://evil-images.example.com/l.png",
+    "https://a.images.example.com/l.png",
+    "https://example.com/l.png",
+    "https://images.example.com@evil.test/l.png",
+    "https://evil.test/https://images.example.com/l.png",
+    "https://іmages.example.com/l.png", // Cyrillic i
+    "http://images.example.com/l.png",
+    "//images.example.com/l.png",
+    "https:\\\\images.example.com/l.png",
+    "https:images.example.com/l.png",
+    " https://images.example.com/l.png",
+  ]) {
+    assert.throws(() => sanitizeDraftHtml(`<img src="${bad}">`, { allowedImageHosts: allow }), isGuardRefusal, bad);
+  }
+  // A trailing-dot entry never matches anything, and no hosts means no https images at all.
+  assert.throws(() => sanitizeDraftHtml(`<img src="https://images.example.com/l.png">`, { allowedImageHosts: ["images.example.com."] }), isGuardRefusal);
+  assert.throws(() => sanitizeDraftHtml(`<img src="https://images.example.com/l.png">`, { allowedImageHosts: [] }), isGuardRefusal);
+});
+
+test("sanitizeDraftHtml property check: random mixes of allowed and hostile fragments refuse or come out clean", () => {
+  const pieces = [...ALLOWED_INPUTS, ...Object.values(REMOTE_BYPASSES), ...Object.values(PROVEN_PAYLOADS), "<", ">", "\"", "'", "&", "<table>", "</td>", "<a href=https://example.com>", "<!--", "-->", "</p>", " "];
+  let seed = 1234567;
+  const rand = (n: number): number => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  let refused = 0;
+  for (let i = 0; i < 600; i++) {
+    let html = "";
+    for (let k = 0, m = 1 + rand(5); k < m; k++) html += pieces[rand(pieces.length)];
+    if (refusedOrClean(html).refused) refused++;
+  }
+  assert.ok(refused > 0 && refused < 600, `refused ${refused}/600`);
+});
+
