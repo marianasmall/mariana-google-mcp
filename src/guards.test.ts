@@ -229,6 +229,17 @@ const REMOTE_BYPASSES: Record<string, string> = {
   "percent-encoded scheme": `<img src="%68ttps://evil">`,
   "percent-encoded colon and slashes": `<img src="https%3A%2F%2Fevil/x">`,
   "fullwidth scheme": `<img src="ｈｔｔｐｓ：／／evil/x">`,
+  "empty comment <!-->": `<!-->`,
+  "comment <!--->": `<!--->`,
+  "comment closed by --!>": `<!-- x --!>`,
+  "svg style foreign content": `<svg><style><a href="https://ok"></style></svg>`,
+  "math tag": `<math>`,
+  "template tag": `<template>`,
+  "noscript tag": `<noscript>`,
+  "style body with anchor": `<style><a href=https://x></style>`,
+  "style unclosed": `<style>p{color:red}`,
+  "title body with tag": `<title><a href="https://ok"></title>`,
+  "non-ascii before style then evil": `${"İ".repeat(5)}<style><a href="https://ok"></STYLE><link href=//evil/x>`,
   "anchor inside style raw text": `<style>x{background:url(<a href="https://evil/x">)}</style>`,
   "anchor inside comment": `<!-- <a href="https://evil"> -->`,
   "anchor inside textarea": `<textarea><a href=https://evil></textarea>`,
@@ -268,6 +279,10 @@ test("assertNoRemoteResources allows cid:, data:, plain links, plain text", () =
     `<img src="logo.png">`, // relative: resolves nowhere remote, and <base> is refused
     `<p>Hello</p>`,
     `<style>p{color:red}</style><a href="https://example.com">link</a>`,
+    `<style>p{color:red}</style><a href="https://example.com">x</a>`,
+    `<title>Hi</title>`,
+    `<style>a</style >`,
+    `${"İ".repeat(5)}<style>a</STYLE><a href="https://ok">x</a>`, // exact index handling on non-ASCII text
     `<img src="data:image/png;base64,AAAA">`,
     `<p>100% sure, %zz and %4 are just text</p>`, // malformed percent-sequences must not throw
   ]) {

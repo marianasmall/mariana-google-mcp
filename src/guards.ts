@@ -155,8 +155,6 @@ function normalizeStable(s: string, cssEscapes: boolean, percent = false): strin
   return pass(cur) === cur ? cur : null;
 }
 
-const RAW_TEXT_TAGS = new Set(["style", "script", "title", "textarea", "xmp", "noscript", "noembed", "noframes", "iframe", "plaintext"]);
-
 /**
  * Find the value spans of `href` attributes on well-formed <a>/<area> tags.
  * A tag only counts if a spec-style tokenizer sees it as a real tag AND its raw
@@ -172,12 +170,6 @@ function findAnchorHrefSpans(text: string): Array<[number, number]> {
   while (i < n) {
     const lt = text.indexOf("<", i);
     if (lt < 0 || lt + 1 >= n) break;
-    if (text.startsWith("<!--", lt)) {
-      const endC = text.indexOf("-->", lt + 4);
-      if (endC < 0) break;
-      i = endC + 3;
-      continue;
-    }
     if (!/[a-z]/i.test(text[lt + 1])) {
       i = lt + 1;
       continue;
@@ -222,12 +214,16 @@ function findAnchorHrefSpans(text: string): Array<[number, number]> {
     }
     i = j;
     if (!closed) break;
-    if (RAW_TEXT_TAGS.has(tagName)) {
-      // Raw-text region: anything inside is not a real tag, so record no spans there.
-      if (tagName === "plaintext") break;
-      const close = text.toLowerCase().indexOf("</" + tagName, j);
-      if (close < 0) break;
-      i = close;
+    if (tagName === "style" || tagName === "title") {
+      // The only raw-text tags allowed. Comments, svg/math, script, textarea etc. are refused
+      // outright by RESIDUE_PATTERNS, so no other skipping rules (and no parser differentials) exist.
+      // The body must hold no "<" at all, and the close tag is found with an ASCII-only regex on the
+      // ORIGINAL string (never a lowercased copy, whose indices can shift on non-ASCII text).
+      const closeRe = new RegExp("</" + tagName + "\\s*>", "gi");
+      closeRe.lastIndex = j;
+      const cm = closeRe.exec(text);
+      if (!cm || text.slice(j, cm.index).includes("<")) throw remoteResourceError();
+      i = cm.index + cm[0].length;
       continue;
     }
     if (tagName !== "a" && tagName !== "area") continue;
@@ -279,6 +275,7 @@ const RESIDUE_PATTERNS: RegExp[] = [
   /srcdoc/i,
   /http-equiv/i,
   /<\s*(?:i?frame|frameset|object|embed)\b/i, // drafts never need embedded documents
+  /<!--|<\s*(?:svg|math|script|noscript|xmp|plaintext|noembed|noframes|template|textarea)\b/i, // ambiguous parsing contexts
   /data:(?!image\/(?:png|jpe?g|gif|webp);base64,)/i, // any data: form except raster base64 images
 ];
 
