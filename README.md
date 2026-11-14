@@ -1,8 +1,10 @@
 # mariana-google-mcp
 
-A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts, with safety-first defaults. Email itself is never sent: there is no send tool. Mail and events are moved or flagged, never deleted. Every write is logged. Three opt-in exceptions: a filter can forward, a calendar event can invite, and your own unsent drafts can be trashed (or permanently removed on an explicit flag).
+A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts, with safety-first defaults. The agent can read and draft, but nothing leaves your account without you. There is no send tool, no filter tool, and the server never sends calendar invites or updates. Mail and events are labeled or flagged, never deleted. The one removal is your own unsent drafts, which go to Trash (recoverable). Every write is logged, including failed and refused attempts.
 
-**Who this is for:** operators who want Claude to help run their Google inbox and calendar, while sending and deleting stay in their own hands by default.
+**Who this is for:** operators who want Claude to help run their Google inbox and calendar, while sending and deleting stay in their own hands.
+
+These are the guarantees the code enforces. Where one depends on your own configuration (for example, how broad you make `attachmentRoots`), the section below says so. See [What this does not protect against](#what-this-does-not-protect-against) for the limits.
 
 [![License](https://img.shields.io/github/license/marianasmall/mariana-google-mcp)](LICENSE)
 [![Built with Claude Code](https://img.shields.io/badge/built%20with-Claude%20Code-D97757)](https://claude.com/claude-code)
@@ -10,7 +12,7 @@ A custom MCP (Model Context Protocol) server that gives Claude Code access to Gm
 
 ![Tools exposed to Claude Code](docs/assets/readme-tools.svg)
 
-*The 23 tools this server gives Claude Code, with descriptions taken from the source. Dotted tools write to your account and are logged.*
+*The 22 tools this server gives Claude Code, with abridged descriptions. Dotted tools write to your account and are logged.*
 
 ## Quick start
 
@@ -26,9 +28,11 @@ Then add the server to Claude Code and run `google_auth` (steps 3 and 4 under [S
 
 This server is built for an operator who wants AI to help manage their Google workspace without risk of accidental damage:
 
-- **No sending email.** You can draft, but sending requires manual action in Gmail.
-- **No deleting your mail.** Gmail uses a "To Be Deleted" label (soft-delete). Calendar prepends "DELETE - " to event titles. You review and confirm in the Google UI. The single exception is your own unsent drafts (`gmail_delete_draft`), and that defaults to Trash (recoverable for 30 days), with permanent removal behind an explicit flag.
-- **Every mutation is logged.** An append-only JSONL action log records every write operation with timestamps, tool name, account, and summary.
+- **No sending email.** You can draft, but sending requires manual action in Gmail. There is no send tool and no filter tool (filters can forward mail, so `gmail_create_filter` was removed).
+- **No deleting your mail.** Gmail uses a "To Be Deleted" label (soft-delete). Calendar prepends "DELETE - " to event titles. You review and confirm in the Google UI. The single exception is your own unsent drafts (`gmail_delete_draft`), which move to Trash (recoverable for 30 days). There is no permanent-delete option.
+- **No trashing or spamming through labels.** `gmail_apply_label` refuses the `TRASH` and `SPAM` labels. `gmail_remove_label` with `INBOX` archives a message; that is recoverable (the message stays in All Mail).
+- **No invites.** Calendar writes always use `sendUpdates: "none"` (hardcoded, not a parameter), so Google never emails guests about events this server creates or changes.
+- **Every write is logged.** An append-only JSONL action log records every write with timestamps, tool name, account, and summary. Failed and refused attempts are logged too.
 - **Multi-account support.** Manage personal and work accounts with named aliases.
 
 ## Setup
@@ -86,9 +90,31 @@ Replace `/path/to/` with the actual path to your clone, and fill in your OAuth c
 
 After restarting Claude Code, run the `google_auth` tool. It will open a browser window for OAuth consent. Once authorized, your token is stored locally and refreshed automatically.
 
-Scopes requested: `userinfo.email`, `gmail.modify`, `calendar.events`, `calendar.calendarlist.readonly`, `calendar.freebusy`, `contacts.readonly`. After upgrading, re-run google_auth for each account so the token carries only these scopes.
+How the sign-in is protected:
 
-## Available Tools (23)
+- The consent callback listens on `127.0.0.1` only (a random local port), never on a network address.
+- The flow uses a random `state` value and PKCE, so a forged or intercepted callback is rejected.
+- An existing account name cannot be silently re-bound to a different Google account. Using a name that already belongs to another address is refused; pick a new name or remove the old one from `config.json` yourself.
+- This needs a Google OAuth client of type **Desktop app**. A "Web application" client cannot register the random-port loopback redirect, and sign-in will fail.
+
+### Scopes
+
+The server requests exactly these six scopes (defined in `src/auth.ts`):
+
+| Scope | Why |
+|-------|-----|
+| `userinfo.email` | Learn which Google account signed in |
+| `gmail.modify` | Read mail, create and edit drafts, apply labels. Google's scope is broader than the tools use (on Google's side it also covers sending and trashing), so the limits come from the tools this server exposes, not from the scope |
+| `calendar.events` | Create and edit events on calendars you own |
+| `calendar.calendarlist.readonly` | Check that you own a calendar before writing to it |
+| `calendar.freebusy` | The availability tool |
+| `contacts.readonly` | Check that event guests are in your saved contacts |
+
+### Re-consent after upgrading
+
+Earlier versions also asked for full Calendar access (`calendar`) and Gmail settings access (`gmail.settings.basic`, which is what allowed filters). Upgrading the code does not shrink a token you already have: it keeps the old, broader grant until you sign in again. Re-run `google_auth` for each account after upgrading so the stored token carries only the six scopes above, then restart Claude Code so the rebuilt server loads. You can also remove the old grant at https://myaccount.google.com/permissions before signing in again.
+
+## Available Tools (22)
 
 ### Authentication & Status
 | Tool | Description |
@@ -96,7 +122,7 @@ Scopes requested: `userinfo.email`, `gmail.modify`, `calendar.events`, `calendar
 | `google_auth` | Authenticate a Google account via OAuth browser flow |
 | `google_status` | Check connection health for all configured accounts |
 
-### Gmail (12 tools)
+### Gmail (11 tools)
 | Tool | Description |
 |------|-------------|
 | `gmail_search` | Search messages using Gmail query syntax |
@@ -104,13 +130,12 @@ Scopes requested: `userinfo.email`, `gmail.modify`, `calendar.events`, `calendar
 | `gmail_list_labels` | List all Gmail labels/folders |
 | `gmail_draft` | Create a draft email: plain text or rich HTML body, optional file attachments, optional reply-in-thread via `thread_id` (does NOT send) |
 | `gmail_create_label` | Create a new label (supports nesting with `/`) |
-| `gmail_apply_label` | Apply a label to one or more messages |
-| `gmail_remove_label` | Remove a label from one or more messages |
-| `gmail_create_filter` | Create a filter rule (match criteria → actions) |
+| `gmail_apply_label` | Apply a label to one or more messages (refuses `TRASH` and `SPAM`) |
+| `gmail_remove_label` | Remove a label from one or more messages (removing `INBOX` archives; recoverable) |
 | `gmail_move_to_delete` | Soft-delete: move messages to a "To Be Deleted" label |
 | `gmail_list_drafts` | List current drafts with IDs, subjects, recipients, thread |
 | `gmail_update_draft` | Revise a draft in place, preserving its thread and threading headers |
-| `gmail_delete_draft` | Remove a draft. Trash by default (30-day recovery), permanent on request |
+| `gmail_delete_draft` | Move a draft to Trash (30-day recovery). No permanent option |
 
 ### Calendar (7 tools)
 | Tool | Description |
@@ -118,8 +143,8 @@ Scopes requested: `userinfo.email`, `gmail.modify`, `calendar.events`, `calendar
 | `calendar_list` | List upcoming calendar events |
 | `calendar_search` | Search events by keyword |
 | `calendar_get` | Get full details of a specific event |
-| `calendar_create` | Create an event (does NOT send invites by default) |
-| `calendar_update` | Modify an existing event (does NOT notify attendees by default) |
+| `calendar_create` | Create an event (never sends invites; guests must be allowed, see [Calendar guests](#calendar-guests)) |
+| `calendar_update` | Modify an existing event (never notifies guests; same guest rules) |
 | `calendar_flag_delete` | Soft-delete: prepend "DELETE - " to event title |
 | `calendar_availability` | Check free/busy status for a date range |
 
@@ -147,21 +172,71 @@ All configuration is stored in `~/.config/mariana-google-mcp/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Account registry (names, email hashes, defaults) |
+| `config.json` | Account registry (names, email hashes, defaults) plus the optional `attachmentRoots` and `allowedAttendees` settings below |
 | `tokens/<hash>.json` | OAuth tokens per account (auto-refreshed) |
 | `action-log.jsonl` | Append-only log of all mutations |
 
-Tokens are stored by email hash, not plaintext email, for a layer of indirection.
+Permissions: the config directory and `tokens/` are `0700`; `config.json`, the token files and the action log are `0600` (owner-only). The server re-applies these on every start and never follows a symlink when it does.
+
+Tokens are stored under a hash of the email address, not the plaintext address, for a layer of indirection. The hash is an unsalted SHA-256. It only names the token file, so it is not a secret and is not meant to hide the address from someone who already has the config directory; salting it would orphan existing token files and force a re-consent, which is not worth it for a file name.
+
+### Settings you can add to `config.json`
+
+Both are optional. Edit `config.json` yourself. No tool changes these two settings, and the attachment guard refuses to read the config directory.
+
+```json
+{
+  "attachmentRoots": ["/absolute/path/to/outbox", "/absolute/path/to/proposals"],
+  "allowedAttendees": ["partner@example.com", "assistant@example.com"]
+}
+```
+
+Add these next to the existing `accounts` entries, not instead of them. Folder paths must be absolute: the server does not expand `~`, and a root that does not resolve is simply ignored, so nothing from it can be attached.
+
+**`attachmentRoots`** is the list of folders `gmail_draft` may attach files from. If you leave it out, the defaults are `~/Projects`, `~/Documents`, `~/Downloads`, `~/Desktop` and `~/Library/CloudStorage`. Listing your own folders replaces the defaults, so a narrow list (one dedicated outbox folder) is the safest choice. A guarantee depends on this: if you add a broad folder (your whole home directory, say), anything inside it that is not otherwise blocked can be attached to a draft. Regardless of the roots, these are always refused:
+
+- anything inside the config directory or `tokens/`, or inside `~/.claude` or `~/.ssh`
+- anything inside a hidden folder, or a hidden file
+- files that look like keys or credentials (`id_rsa`-style names, `.pem`, `.key`, `.p12`, `.pfx`, `.keychain-db`, `.env*`, `credentials.json`, `token.json`)
+
+The path is resolved to its real location first, so symlinks and `..` cannot be used to step outside a root. Every rejection returns the same message, so the error does not reveal whether a given file exists. Total attachment size is capped at 20MB.
+
+**`allowedAttendees`** is a list of addresses that may be added as calendar guests even though they are not in your Google Contacts. See [Calendar guests](#calendar-guests). Default: empty.
+
+### Other input checks
+
+- Carriage returns and line feeds are refused in `to`, `cc` and `bcc` (header injection), on both `gmail_draft` and `gmail_update_draft`.
+
+## Calendar guests
+
+The server never sends invites or updates (`sendUpdates` is hardcoded to `"none"`). Even so, a guest added to an event can see it on their own calendar if Google shows it to them, so guests are restricted:
+
+- A guest must be in your **saved Google Contacts** ("My Contacts"), or be listed in `allowedAttendees`, or be your own address. "Other contacts" (people Gmail added because they emailed you) are deliberately not trusted, because a stranger could get themselves added by sending you mail. If an address is not allowed, the event is refused.
+- Writes go only to calendars your account **owns**. Calendars shared with you by other people are refused.
+- If an event already has a guest who is not allowed, `calendar_update` refuses to change the **title, description or location** (the guests would read the new text). Changing the time is still allowed.
+- If the contacts lookup itself fails, the check fails closed: only `allowedAttendees` guests pass.
+
+A side effect to know about: whether a create or update succeeds or is refused tells the agent whether an address is in your contacts. That is a small amount of information about your address book, and the agent can reach it by trying addresses.
 
 ## Action Log
 
-Every write operation (drafts, calendar creates/updates, soft-deletes) is logged to `~/.config/mariana-google-mcp/action-log.jsonl` in this format:
+Every write operation (drafts, label changes, calendar creates/updates, soft-deletes) is logged to `~/.config/mariana-google-mcp/action-log.jsonl` in this format:
 
 ```json
 {"timestamp":"2026-04-03T10:30:00.000Z","tool":"gmail_draft","account":"primary","summary":"Draft created: subject='Meeting follow-up'"}
 ```
 
-The log is append-only and never modified by the server. Review it anytime to audit what Claude has done.
+Failed and refused write attempts are logged as well, with an `outcome` of `"failed"` or `"refused"`. The message is short (about 300 characters), newlines are collapsed, and credential-shaped strings (bearer tokens, Google access and refresh tokens) are redacted. The log does not store request bodies or message text; a draft entry records the subject and recipient.
+
+The server only ever appends to the log. Review it anytime to audit what Claude has done. (Anything with write access to your account directory could edit it, so treat it as an audit aid, not tamper-proof evidence.)
+
+## What this does not protect against
+
+- **HTML in drafts.** `gmail_draft` and `gmail_update_draft` accept a raw HTML body, which can include remote images (tracking pixels) or links. This is a known, accepted risk: every draft is meant to be reviewed by you before you send it. If you do not read drafts before sending, do not rely on this.
+- **Mail the agent reads.** Anything in your inbox or calendar can contain instructions aimed at the agent (prompt injection). The tools above limit what a hijacked agent can do, but they do not stop it from reading, labeling, archiving or drafting.
+- **Anything else holding your token.** The `gmail.modify` scope can send mail at Google's level. This server never does, but another program with access to the token file could. That is why the tokens are `0600` and the config directory `0700`.
+- **A broad `attachmentRoots`.** See above: you decide what is attachable.
+- **A compromised machine or config.** Anyone who can edit `config.json` can widen `attachmentRoots` and `allowedAttendees`.
 
 ## Fork and Use
 

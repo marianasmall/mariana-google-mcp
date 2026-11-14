@@ -3,6 +3,8 @@
 **Date:** 2026-04-03
 **Status:** Draft — pending user approval
 
+> **Historical document (2026-04-03).** This is the original design. It predates the 2026-11 security hardening: `gmail_create_filter` has been removed, calendar guests are restricted, permanent draft deletion is gone, and OAuth scopes are narrower. The README describes current behavior.
+
 ## Overview
 
 A custom MCP (Model Context Protocol) server providing Gmail and Google Calendar access for Claude Code. Built with safety-first defaults: no sending emails, no deleting anything, soft-delete patterns for all destructive actions.
@@ -216,7 +218,7 @@ Added to `~/.claude.json` under `mcpServers`:
   "mariana-google-mcp": {
     "type": "stdio",
     "command": "node",
-    "args": ["/Users/marianasmall/Projects/mariana-google-mcp/dist/index.js"],
+    "args": ["~/Projects/mariana-google-mcp/dist/index.js"],
     "env": {
       "GOOGLE_CLIENT_ID": "<from env>",
       "GOOGLE_CLIENT_SECRET": "<from env>"

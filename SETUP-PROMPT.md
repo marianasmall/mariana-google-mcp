@@ -7,9 +7,11 @@
 You will install `mariana-google-mcp`, an open-source MCP server (MIT license) that gives Claude Code direct access to Gmail, Google Calendar, and Google Contacts across multiple Google accounts. It is deliberately safety-first:
 
 - **It cannot send email.** It creates drafts only; the user reviews and sends from Gmail.
-- **It cannot delete your mail.** Gmail deletions apply a "To Be Deleted" label; calendar deletions prepend "DELETE - " to the event title. The user confirms in the Google UI. The one exception is the user's own unsent drafts, which `gmail_delete_draft` can remove — and even that moves them to Trash by default, recoverable for 30 days, with permanent deletion behind an explicit flag.
+- **It cannot delete your mail.** Gmail deletions apply a "To Be Deleted" label; calendar deletions prepend "DELETE - " to the event title. The user confirms in the Google UI. The one exception is the user's own unsent drafts, which `gmail_delete_draft` moves to Trash (recoverable for 30 days). There is no permanent-delete option, and `gmail_apply_label` refuses the TRASH and SPAM labels.
+- **It cannot create filters and never sends calendar invites.** There is no filter tool (filters can forward mail). Calendar writes never email guests. Guests must be in the owner's saved Google Contacts or on an `allowedAttendees` list in `config.json`, and events are written only to calendars the owner owns.
+- **Attachments are limited to chosen folders.** Drafts can attach files only from the folders in `attachmentRoots` in `config.json` (defaults: Projects, Documents, Downloads, Desktop, Library/CloudStorage under the home folder), never from hidden folders, `~/.ssh`, `~/.claude` or the server's own config folder.
 - **Replies actually thread.** Pass `reply_to_message_id` and the draft carries the `In-Reply-To` and `References` headers real threading depends on, not just Gmail's internal thread id. The tool states in its result whether it made a reply or a new conversation, so a mistake is visible immediately rather than discovered by the recipient.
-- **Every write is logged** to an append-only local action log.
+- **Every write is logged** to a local append-only action log, including failed and refused attempts. The log, config and tokens are readable only by the owner (`0600`).
 - **Multi-account:** each Google account connects under a named alias and tools take an `account` parameter.
 
 Repo: https://github.com/marianasmall/mariana-google-mcp
@@ -91,6 +93,10 @@ For each account on the list from Step 0:
 2. A browser window opens. The user picks the matching Google account and approves.
 3. They will see a **"Google hasn't verified this app"** warning. This is expected (the app is their own, unverified). Click **Advanced → Go to Claude Code (unsafe)** → Continue, and approve the requested permissions.
 
+The sign-in listens on `127.0.0.1` only and uses `state` and PKCE. It requires the **Desktop app** client type from Step 1; a "Web application" client will fail. Re-using an account alias for a different Google account is refused.
+
+The server requests exactly six scopes: `userinfo.email`, `gmail.modify`, `calendar.events`, `calendar.calendarlist.readonly`, `calendar.freebusy`, `contacts.readonly`. If the user connected accounts with an older version of this server, have them re-run `google_auth` for each account so the stored token drops the older, broader grants.
+
 Tokens are stored locally at `~/.config/mariana-google-mcp/` and refresh automatically.
 
 ### Step 5 — Verify (you do this)
@@ -110,7 +116,7 @@ Nothing about the accounts changes; Claude becomes the one place to look. Establ
 Auto-forward the secondary accounts into the primary one; filters label incoming mail by brand on arrival; Gmail's "Send mail as" lets replies go out from the correct address without leaving the primary inbox. You guide the user through Gmail Settings (Forwarding and POP/IMAP → Add a forwarding address, then Accounts → Send mail as). Useful detail: forwarding setup emails a verification code to the primary account — once accounts are connected you can read that code for the user via `gmail_search`/`gmail_read` instead of making them fish for it. Offer this only after Play 1 has run for a while and shown that one inbox truly dominates.
 
 **Play 3 — Shared label taxonomy across accounts.**
-Whether or not they consolidate, create a consistent label set in each account (e.g., `Action`, `Waiting`, `Read Later`, plus brand or client labels) using `gmail_create_label`, and set up filters with `gmail_create_filter` so routine mail self-organizes. Mirror the same names everywhere so the user's mental model transfers between accounts.
+Whether or not they consolidate, create a consistent label set in each account (e.g., `Action`, `Waiting`, `Read Later`, plus brand or client labels) using `gmail_create_label`, and apply them to messages with `gmail_apply_label` during each sweep. There is no filter tool, so if the user wants labels applied automatically on arrival, walk them through creating the filter themselves in Gmail Settings → Filters and Blocked Addresses. Mirror the same names everywhere so the user's mental model transfers between accounts.
 
 ## Troubleshooting
 

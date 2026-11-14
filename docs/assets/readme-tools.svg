@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="790" viewBox="0 0 880 790" role="img" aria-labelledby="t d">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="769" viewBox="0 0 880 769" role="img" aria-labelledby="t d">
   <title id="t">Tools exposed to Claude Code by mariana-google-mcp</title>
-  <desc id="d">Terminal-style list of the 23 tools this MCP server registers, grouped by Account, Gmail, Calendar and Contacts, with each tool's description from the source code.</desc>
+  <desc id="d">Terminal-style list of the 22 tools this MCP server registers, grouped by Account, Gmail, Calendar and Contacts, with an abridged description of each.</desc>
   <style>
     text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
     .name { fill: #7ee787; }
@@ -10,48 +10,47 @@
     .foot { fill: #e6edf3; }
     .dot { fill: #e3b341; }
   </style>
-  <rect width="880" height="790" rx="12" fill="#0d1117"/>
+  <rect width="880" height="769" rx="12" fill="#0d1117"/>
   <path d="M12 0h856a12 12 0 0 1 12 12v24H0V12A12 12 0 0 1 12 0z" fill="#161b22"/>
   <circle cx="22" cy="18" r="6" fill="#ff5f57"/>
   <circle cx="42" cy="18" r="6" fill="#febc2e"/>
   <circle cx="62" cy="18" r="6" fill="#28c840"/>
-  <text x="440" y="23" text-anchor="middle" class="muted">mariana-google-mcp · 23 tools</text>
+  <text x="440" y="23" text-anchor="middle" class="muted">mariana-google-mcp · 22 tools</text>
 
-  <text x="24" y="70" class="muted"># Tools exposed to Claude Code, as registered in src/*.ts</text>
+  <text x="24" y="70" class="muted"># Tools exposed to Claude Code, as registered in src/*.ts (descriptions abridged)</text>
 
   <text x="24" y="100" class="head">ACCOUNT (2)</text>
   <text x="48" y="122" class="name">google_auth</text><text x="236" y="122" class="desc">Authenticate a Google account.</text>
   <text x="48" y="143" class="name">google_status</text><text x="236" y="143" class="desc">Check connection health for all configured Google accounts.</text>
 
-  <text x="24" y="174" class="head">GMAIL (12)</text>
+  <text x="24" y="174" class="head">GMAIL (11)</text>
   <text x="48" y="196" class="name">gmail_search</text><text x="236" y="196" class="desc">Search Gmail messages.</text>
   <text x="48" y="217" class="name">gmail_read</text><text x="236" y="217" class="desc">Read a specific Gmail message by ID.</text>
   <text x="48" y="238" class="name">gmail_list_labels</text><text x="236" y="238" class="desc">List all Gmail labels/folders for an account.</text>
   <circle cx="36" cy="255" r="3.5" class="dot"/><text x="48" y="259" class="name">gmail_draft</text><text x="236" y="259" class="desc">Create a draft email. Does NOT send.</text>
   <text x="48" y="280" class="name">gmail_list_drafts</text><text x="236" y="280" class="desc">List current Gmail drafts with their IDs, subjects and recipients.</text>
   <circle cx="36" cy="297" r="3.5" class="dot"/><text x="48" y="301" class="name">gmail_update_draft</text><text x="236" y="301" class="desc">Revise an existing Gmail draft in place.</text>
-  <circle cx="36" cy="318" r="3.5" class="dot"/><text x="48" y="322" class="name">gmail_delete_draft</text><text x="236" y="322" class="desc">Delete a Gmail draft. Moves it to Trash by default.</text>
+  <circle cx="36" cy="318" r="3.5" class="dot"/><text x="48" y="322" class="name">gmail_delete_draft</text><text x="236" y="322" class="desc">Move a draft to Trash (recoverable). No permanent option.</text>
   <circle cx="36" cy="339" r="3.5" class="dot"/><text x="48" y="343" class="name">gmail_create_label</text><text x="236" y="343" class="desc">Create a new Gmail label.</text>
-  <circle cx="36" cy="360" r="3.5" class="dot"/><text x="48" y="364" class="name">gmail_apply_label</text><text x="236" y="364" class="desc">Apply a label to one or more Gmail messages.</text>
-  <circle cx="36" cy="381" r="3.5" class="dot"/><text x="48" y="385" class="name">gmail_remove_label</text><text x="236" y="385" class="desc">Remove a label from one or more Gmail messages.</text>
-  <circle cx="36" cy="402" r="3.5" class="dot"/><text x="48" y="406" class="name">gmail_create_filter</text><text x="236" y="406" class="desc">Create a Gmail filter rule.</text>
-  <circle cx="36" cy="423" r="3.5" class="dot"/><text x="48" y="427" class="name">gmail_move_to_delete</text><text x="236" y="427" class="desc">Soft-delete: move messages to a 'To Be Deleted' label.</text>
+  <circle cx="36" cy="360" r="3.5" class="dot"/><text x="48" y="364" class="name">gmail_apply_label</text><text x="236" y="364" class="desc">Apply a label to messages. Refuses TRASH and SPAM.</text>
+  <circle cx="36" cy="381" r="3.5" class="dot"/><text x="48" y="385" class="name">gmail_remove_label</text><text x="236" y="385" class="desc">Remove a label from messages (INBOX = archive).</text>
+  <circle cx="36" cy="402" r="3.5" class="dot"/><text x="48" y="406" class="name">gmail_move_to_delete</text><text x="236" y="406" class="desc">Soft-delete: move messages to a 'To Be Deleted' label.</text>
 
-  <text x="24" y="458" class="head">CALENDAR (7)</text>
-  <text x="48" y="480" class="name">calendar_list</text><text x="236" y="480" class="desc">List upcoming calendar events.</text>
-  <text x="48" y="501" class="name">calendar_search</text><text x="236" y="501" class="desc">Search calendar events by keyword.</text>
-  <text x="48" y="522" class="name">calendar_get</text><text x="236" y="522" class="desc">Get full details of a specific calendar event.</text>
-  <circle cx="36" cy="539" r="3.5" class="dot"/><text x="48" y="543" class="name">calendar_create</text><text x="236" y="543" class="desc">Create a calendar event. Does NOT send invites by default.</text>
-  <circle cx="36" cy="560" r="3.5" class="dot"/><text x="48" y="564" class="name">calendar_update</text><text x="236" y="564" class="desc">Modify an existing calendar event. Does NOT notify attendees by default.</text>
-  <circle cx="36" cy="581" r="3.5" class="dot"/><text x="48" y="585" class="name">calendar_flag_delete</text><text x="236" y="585" class="desc">Soft-delete: prepend 'DELETE - ' to event title.</text>
-  <text x="48" y="606" class="name">calendar_availability</text><text x="236" y="606" class="desc">Check free/busy status for a date or date range.</text>
+  <text x="24" y="437" class="head">CALENDAR (7)</text>
+  <text x="48" y="459" class="name">calendar_list</text><text x="236" y="459" class="desc">List upcoming calendar events.</text>
+  <text x="48" y="480" class="name">calendar_search</text><text x="236" y="480" class="desc">Search calendar events by keyword.</text>
+  <text x="48" y="501" class="name">calendar_get</text><text x="236" y="501" class="desc">Get full details of a specific calendar event.</text>
+  <circle cx="36" cy="518" r="3.5" class="dot"/><text x="48" y="522" class="name">calendar_create</text><text x="236" y="522" class="desc">Create an event. Never sends invites. Guests must be known contacts.</text>
+  <circle cx="36" cy="539" r="3.5" class="dot"/><text x="48" y="543" class="name">calendar_update</text><text x="236" y="543" class="desc">Modify an event. Never notifies guests. Same guest rule.</text>
+  <circle cx="36" cy="560" r="3.5" class="dot"/><text x="48" y="564" class="name">calendar_flag_delete</text><text x="236" y="564" class="desc">Soft-delete: prepend 'DELETE - ' to event title.</text>
+  <text x="48" y="585" class="name">calendar_availability</text><text x="236" y="585" class="desc">Check free/busy status for a date or date range.</text>
 
-  <text x="24" y="637" class="head">CONTACTS (2)</text>
-  <text x="48" y="659" class="name">contacts_search</text><text x="236" y="659" class="desc">Search Google Contacts by name, email, or phone number.</text>
-  <text x="48" y="680" class="name">contacts_list</text><text x="236" y="680" class="desc">List Google Contacts, optionally filtered by contact group.</text>
+  <text x="24" y="616" class="head">CONTACTS (2)</text>
+  <text x="48" y="638" class="name">contacts_search</text><text x="236" y="638" class="desc">Search Google Contacts by name, email, or phone number.</text>
+  <text x="48" y="659" class="name">contacts_list</text><text x="236" y="659" class="desc">List Google Contacts, optionally filtered by contact group.</text>
 
-  <line x1="24" y1="704" x2="856" y2="704" stroke="#30363d"/>
-  <circle cx="36" cy="726" r="3.5" class="dot"/><text x="48" y="730" class="muted">= writes to your account; every one is appended to the local action log</text>
-  <text x="24" y="756" class="foot">No send tool  ·  Moves and flags, never deletes*  ·  Every write logged</text>
-  <text x="24" y="776" class="muted">* Opt-in: filters can forward, events can invite, drafts can be trashed or deleted.</text>
+  <line x1="24" y1="683" x2="856" y2="683" stroke="#30363d"/>
+  <circle cx="36" cy="705" r="3.5" class="dot"/><text x="48" y="709" class="muted">= writes to your account; every one is appended to the local action log</text>
+  <text x="24" y="735" class="foot">No send tool  ·  No invites or filters  ·  Mail is labeled, never deleted*  ·  Every write logged</text>
+  <text x="24" y="755" class="muted">* Only your own drafts can be trashed, and Trash is recoverable for 30 days.</text>
 </svg>
