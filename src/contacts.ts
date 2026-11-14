@@ -3,6 +3,50 @@ import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getAuthClient } from "./auth.js";
 
+const CONTACT_CACHE_MS = 10 * 60 * 1000;
+const contactCache = new Map<string, { at: number; emails: Set<string> }>();
+
+export function clearContactEmailCache(): void {
+  contactCache.clear();
+}
+
+/**
+ * Every email address in the owner's saved Google Contacts ("My Contacts"),
+ * lowercased. Cached in memory for 10 minutes per `cacheKey` (use the account
+ * name) so one account's contacts are never reused for another.
+ * Deliberately NEVER reads otherContacts: Gmail adds anyone who emails the
+ * owner there, so a stranger could add themselves.
+ */
+export async function getContactEmails(
+  auth: any,
+  cacheKey = "default",
+  peopleApi?: any
+): Promise<Set<string>> {
+  const hit = contactCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < CONTACT_CACHE_MS) return hit.emails;
+
+  const people = peopleApi ?? google.people({ version: "v1", auth });
+  const emails = new Set<string>();
+  let pageToken: string | undefined;
+  do {
+    const res: any = await people.people.connections.list({
+      resourceName: "people/me",
+      pageSize: 1000,
+      personFields: "emailAddresses",
+      pageToken,
+    });
+    for (const p of res.data.connections || []) {
+      for (const e of p.emailAddresses || []) {
+        if (e.value) emails.add(String(e.value).toLowerCase());
+      }
+    }
+    pageToken = res.data.nextPageToken || undefined;
+  } while (pageToken);
+
+  contactCache.set(cacheKey, { at: Date.now(), emails });
+  return emails;
+}
+
 function formatContact(person: any) {
   return {
     name: person.names?.[0]?.displayName || "(no name)",
