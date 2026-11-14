@@ -15,6 +15,16 @@ export interface AppConfig {
   defaultGmailAccount: string;
   defaultCalendar: string;
   accounts: Record<string, AccountEntry>;
+  attachmentRoots?: string[];
+  allowedAttendees?: string[];
+}
+
+const DEFAULT_ATTACHMENT_SUBDIRS = ["Projects", "Documents", "Downloads", "Desktop", "Library/CloudStorage"];
+export function getAttachmentRoots(config: AppConfig): string[] {
+  return config.attachmentRoots ?? DEFAULT_ATTACHMENT_SUBDIRS.map((d) => path.join(os.homedir(), d));
+}
+export function getAllowedAttendees(config: AppConfig): string[] {
+  return config.allowedAttendees ?? [];
 }
 
 export function getConfigDir(): string { return CONFIG_DIR; }

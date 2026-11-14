@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {"mariana-google-mcp": "dist/index.js"},
-  "scripts": {"build": "tsc", "start": "node dist/index.js", "dev": "tsc --watch"},
+  "scripts": {"build": "tsc", "start": "node dist/index.js", "dev": "tsc --watch", "test": "tsc && node --test \"dist/**/*.test.js\""},
   "keywords": ["mcp", "google", "gmail", "calendar", "contacts", "claude-code"],
   "license": "MIT",
   "dependencies": {
