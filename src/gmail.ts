@@ -1,13 +1,13 @@
 import { google } from "googleapis";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { promises as fs } from "fs";
+import { promises as fs, constants as fsConstants } from "fs";
 import * as path from "path";
 import { getAuthClient } from "./auth.js";
 import { logAction, withWriteLogging } from "./logger.js";
 import * as os from "os";
-import { GuardError, assertSafeAddLabels, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
-import { loadConfig, getAttachmentRoots, getConfigDir, getTokensDir } from "./config.js";
+import { GuardError, assertSafeAddLabels, assertNoCRLF, assertNoRemoteResources, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
+import { loadConfig, getAllowedImageHosts, getAttachmentRoots, getConfigDir, getTokensDir } from "./config.js";
 
 function guardErrorResult(err: unknown) {
   if (err instanceof GuardError) {
@@ -21,14 +21,34 @@ function guardErrorResult(err: unknown) {
  * regular file) and read from that same handle, so the file cannot be swapped
  * between check and read. Every failure yields the same GuardError message.
  */
-async function readAttachmentGuarded(filePath: string, roots: string[], forbidden: string[]): Promise<Buffer> {
+export async function readAttachmentGuarded(
+  filePath: string,
+  roots: string[],
+  forbidden: string[],
+  remainingBytes: number = MAX_ATTACHMENT_BYTES,
+  // Test seam only: runs between path validation and open, to simulate a swap race.
+  afterResolve?: (real: string) => Promise<void>
+): Promise<Buffer> {
   const real = await resolveAttachmentPath(filePath, roots, forbidden);
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   try {
-    handle = await fs.open(real, "r");
+    if (afterResolve) await afterResolve(real);
+    // O_NOFOLLOW: a symlink swapped in after validation is refused, not followed.
+    // O_NONBLOCK: opening a FIFO must not hang waiting for a writer.
+    handle = await fs.open(real, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
     const st = await handle.stat();
     if (!st.isFile()) throw new Error("not a regular file");
-    return await handle.readFile();
+    // A hard link can point a harmless-looking name at a secret's data.
+    if (st.nlink > 1) throw new Error("hard-linked file");
+    if (st.size > remainingBytes) throw new Error("over the attachment budget");
+    // The path must still resolve to the place we validated, and that place
+    // must be the very file we hold open.
+    if ((await fs.realpath(filePath)) !== real) throw new Error("path moved");
+    const onDisk = await fs.stat(real);
+    if (onDisk.dev !== st.dev || onDisk.ino !== st.ino) throw new Error("file replaced");
+    const data = await handle.readFile();
+    if (data.length > remainingBytes) throw new Error("over the attachment budget");
+    return data;
   } catch {
     throw new GuardError(attachmentDeniedMessage(roots));
   } finally {
@@ -98,6 +118,9 @@ const getReplyContext = async (
 // linked even for clients that only read that header.
 const buildThreadingHeaders = (ctx: ReplyContext): string[] => {
   if (!ctx.messageId) return [];
+  // Header values come from the mailbox (attacker-controlled): never let a line break through.
+  assertNoCRLF("Message-ID", ctx.messageId);
+  assertNoCRLF("References", ctx.references ?? undefined);
   const references = ctx.references
     ? `${ctx.references} ${ctx.messageId}`
     : ctx.messageId;
@@ -307,8 +330,9 @@ export function registerGmailTools(rawServer: McpServer): void {
         assertNoCRLF("to", to);
         assertNoCRLF("cc", cc);
         assertNoCRLF("bcc", bcc);
+        const config = await loadConfig();
+        if (html) assertNoRemoteResources(html, getAllowedImageHosts(config));
         if (attachments && attachments.length > 0) {
-          const config = await loadConfig();
           const roots = getAttachmentRoots(config);
           const forbidden = [
             getConfigDir(),
@@ -318,11 +342,8 @@ export function registerGmailTools(rawServer: McpServer): void {
           ];
           let totalBytes = 0;
           for (const filePath of attachments) {
-            const data = await readAttachmentGuarded(filePath, roots, forbidden);
+            const data = await readAttachmentGuarded(filePath, roots, forbidden, MAX_ATTACHMENT_BYTES - totalBytes);
             totalBytes += data.length;
-            if (totalBytes > MAX_ATTACHMENT_BYTES) {
-              throw new Error(`Attachments exceed ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB total`);
-            }
             loaded.push({ filePath, data });
           }
         }
@@ -340,6 +361,14 @@ export function registerGmailTools(rawServer: McpServer): void {
       let replyCtx: ReplyContext | null = null;
       if (reply_to_message_id) {
         replyCtx = await getReplyContext(gmail, reply_to_message_id);
+        try {
+          // Threading headers come from the mailbox; a line break there would inject headers.
+          buildThreadingHeaders(replyCtx);
+        } catch (err) {
+          const r = guardErrorResult(err);
+          if (r) return r;
+          throw err;
+        }
       }
       const effectiveThreadId = replyCtx?.threadId ?? thread_id;
       const effectiveSubject = replyCtx ? replySubject(replyCtx.subject, subject) : subject;
@@ -420,7 +449,7 @@ export function registerGmailTools(rawServer: McpServer): void {
         timestamp: new Date().toISOString(),
         tool: "gmail_draft",
         account: accountName,
-        summary: `Draft created: '${effectiveSubject}' to ${to}${attachments?.length ? ` (+${attachments.length} attachment${attachments.length > 1 ? "s" : ""})` : ""}${replyCtx ? " (threaded reply)" : effectiveThreadId ? " (thread_id only)" : ""}`,
+        summary: `Draft created: '${effectiveSubject}' to ${to}${cc ? ` cc ${cc}` : ""}${bcc ? ` bcc ${bcc}` : ""}${attachments?.length ? ` (+${attachments.length} attachment${attachments.length > 1 ? "s" : ""})` : ""}${replyCtx ? " (threaded reply)" : effectiveThreadId ? " (thread_id only)" : ""}`,
         ids: [res.data.id || "unknown"],
       });
 
@@ -501,6 +530,7 @@ export function registerGmailTools(rawServer: McpServer): void {
         assertNoCRLF("to", to);
         assertNoCRLF("cc", cc);
         assertNoCRLF("bcc", bcc);
+        if (html) assertNoRemoteResources(html, getAllowedImageHosts(await loadConfig()));
       } catch (err) {
         const r = guardErrorResult(err);
         if (r) return r;
@@ -537,6 +567,8 @@ export function registerGmailTools(rawServer: McpServer): void {
         assertNoCRLF("to", finalTo);
         assertNoCRLF("cc", finalCc);
         assertNoCRLF("bcc", finalBcc);
+        assertNoCRLF("In-Reply-To", inReplyTo);
+        assertNoCRLF("References", references);
       } catch (err) {
         const r = guardErrorResult(err);
         if (r) return r;

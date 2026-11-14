@@ -8,7 +8,7 @@ import { registerCalendarTools } from "./calendar.js";
 import { registerContactsTools } from "./contacts.js";
 import { startOAuthFlow, checkTokenHealth } from "./auth.js";
 import { loadConfig, ensureDirs } from "./config.js";
-import { logAction } from "./logger.js";
+import { logAction, sanitizeErrorText } from "./logger.js";
 
 const server = new McpServer({
   name: "mariana-google-mcp",
@@ -45,7 +45,7 @@ server.tool(
             timestamp: new Date().toISOString(),
             tool: "google_auth",
             account: account_name,
-            summary: `Auth flow did not complete: ${err.message}`,
+            summary: `Auth flow did not complete: ${sanitizeErrorText(String(err?.message ?? err))}`,
           })
         );
 

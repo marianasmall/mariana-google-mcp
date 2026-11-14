@@ -9,7 +9,7 @@ export class GuardError extends Error {
 }
 
 const SENSITIVE_BASENAMES: RegExp[] = [
-  /^id_(rsa|dsa|ecdsa|ed25519)/,
+  /^id_(rsa|dsa|ecdsa|ed25519)/i,
   /\.(pem|key|p12|pfx|keychain-db)$/i,
   /^\.env/,
   /^(credentials|token)s?\.json$/i,
@@ -88,6 +88,131 @@ export function attachmentDeniedMessage(roots: string[]): string {
 export function assertNoCRLF(field: string, value: string | undefined): void {
   if (value !== undefined && /[\r\n]/.test(value)) {
     throw new GuardError(`${field} must not contain line breaks (CR or LF). Remove them and pass a single-line value; separate multiple addresses with commas.`);
+  }
+}
+
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", colon: ":", sol: "/", bsol: "\\",
+  tab: "\t", newline: "\n", lpar: "(", rpar: ")", period: ".", comma: ",", semi: ";",
+  num: "#", equals: "=", nbsp: " ",
+};
+
+function decodeEntitiesOnce(s: string): string {
+  return s.replace(/&(?:#x([0-9a-f]+)|#(\d+)|([a-z]+));?/gi, (m, hex, dec, name) => {
+    if (hex !== undefined || dec !== undefined) {
+      const cp = hex !== undefined ? parseInt(hex, 16) : parseInt(dec, 10);
+      return Number.isFinite(cp) && cp >= 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : "";
+    }
+    return NAMED_ENTITIES[String(name).toLowerCase()] ?? m;
+  });
+}
+
+/** Decode HTML entities repeatedly, so double-encoded text cannot hide a scheme. */
+function decodeEntities(s: string): string {
+  let cur = s;
+  for (let i = 0; i < 4; i++) {
+    const next = decodeEntitiesOnce(cur);
+    if (next === cur) break;
+    cur = next;
+  }
+  return cur;
+}
+
+function decodeCssEscapes(s: string): string {
+  return s
+    .replace(/\\([0-9a-f]{1,6})[ \t\n\r\f]?/gi, (_m, h) => {
+      const cp = parseInt(h, 16);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : "";
+    })
+    .replace(/\\([^\n])/g, "$1");
+}
+
+// Characters browsers ignore or strip inside URLs, plus invisible lookalikes.
+const URL_NOISE = new RegExp(
+  "[\\u0000-\\u0020\\u007f-\\u00a0\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u2060\\ufeff]",
+  "g"
+);
+
+function remoteResourceError(): GuardError {
+  return new GuardError(
+    "HTML drafts may not contain remote images, stylesheets or other remote resources: Gmail loads them as soon as the owner opens the draft, which tells the sender's server the draft was opened. " +
+      "Remove the remote images and styles (cid: and data: images are fine), or use the plain-text `body` instead. The owner can add images by hand in Gmail."
+  );
+}
+
+/**
+ * Refuse an HTML body that would fetch anything from the internet when the
+ * draft is merely opened: src, srcset, background, poster and similar
+ * attributes, href on non-anchor tags (link, image, use, base), CSS url(),
+ * @import and image-set(). Plain <a href> links are fine, since they need a
+ * click. Anything that is not cid:, data: (or empty / a #fragment) once
+ * entities and CSS escapes are decoded is treated as remote. The one
+ * exception is an https: URL whose host EXACTLY equals an entry of
+ * `allowedImageHosts` (no subdomain wildcards, no http:). Fails closed.
+ */
+export function assertNoRemoteResources(html: string, allowedImageHosts: string[] = []): void {
+  const hosts = new Set(allowedImageHosts.map((h) => h.trim().toLowerCase()).filter(Boolean));
+
+  const urlOk = (raw: string): boolean => {
+    const v = decodeEntities(raw).replace(URL_NOISE, "");
+    if (v === "" || v.startsWith("#")) return true;
+    const lower = v.toLowerCase();
+    if (lower.startsWith("cid:") || lower.startsWith("data:")) return true;
+    if (lower.startsWith("https://")) {
+      try {
+        const u = new URL(v);
+        return u.protocol === "https:" && !u.username && !u.password && hosts.has(u.hostname.toLowerCase());
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  };
+
+  const srcsetOk = (raw: string): boolean => {
+    const decoded = decodeEntities(raw);
+    // Check both as written and with tab/newline stripped (URL parsers drop them).
+    for (const text of [decoded, decoded.replace(/[\t\n\r\f\u0000]/g, "")]) {
+      for (const token of text.split(/\s+/)) {
+        if (token === "") continue;
+        const lower = token.toLowerCase();
+        if (lower.startsWith("data:") || lower.startsWith("cid:")) continue;
+        for (const piece of token.split(",")) {
+          if (piece === "" || /^\d+(\.\d+)?[wx]$/i.test(piece)) continue;
+          if (!urlOk(piece)) return false;
+        }
+      }
+    }
+    return true;
+  };
+
+  const URL_ATTRS = new Set(["src", "background", "poster", "lowsrc", "dynsrc", "data", "xlink:href", "action", "formaction", "ping", "manifest", "icon"]);
+  const tagRe = /<\s*([a-z][^\s/>]*)((?:"[^"]*"|'[^']*'|[^>"'])*)(?:>|$)/gi;
+  const attrRe = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+  for (const tm of html.matchAll(tagRe)) {
+    const tag = tm[1].toLowerCase();
+    for (const am of tm[2].matchAll(attrRe)) {
+      const name = am[1].toLowerCase();
+      const value = am[2] ?? am[3] ?? am[4];
+      if (value === undefined) continue;
+      if (name === "srcset" || name === "imagesrcset") {
+        if (!srcsetOk(value)) throw remoteResourceError();
+      } else if (URL_ATTRS.has(name) || (name === "href" && tag !== "a" && tag !== "area")) {
+        if (!urlOk(value)) throw remoteResourceError();
+      }
+    }
+  }
+
+  // CSS anywhere (style attributes, <style> blocks): decode entities, then CSS escapes.
+  const css = decodeCssEscapes(decodeEntities(html));
+  for (const m of css.matchAll(/url\s*\(\s*(?:"([^"]*)"|'([^']*)'|([^)]*))/gi)) {
+    if (!urlOk(m[1] ?? m[2] ?? m[3] ?? "")) throw remoteResourceError();
+  }
+  for (const m of css.matchAll(/@import\s*(?:url\s*\(\s*)?(?:"([^"]*)"|'([^']*)'|([^\s;)]*))/gi)) {
+    if (!urlOk(m[1] ?? m[2] ?? m[3] ?? "")) throw remoteResourceError();
+  }
+  for (const m of css.matchAll(/image-set\s*\(\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+    if (!urlOk(m[1] ?? m[2] ?? "")) throw remoteResourceError();
   }
 }
 

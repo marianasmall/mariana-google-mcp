@@ -56,6 +56,119 @@ test("gmail_draft rejects a disallowed attachment with one uniform message", asy
   assert.ok(!msgs[0].includes(dir));
 });
 
+test("gmail_draft and gmail_update_draft refuse remote resources in html before any network call", async () => {
+  const cap = setup();
+  const html = `<p>hi</p><img src="https://evil.test/pixel.png">`;
+  const d = await cap.get("gmail_draft").handler({ to: "a@example.com", subject: "s", html });
+  assert.equal(d.isError, true);
+  assert.match(d.content[0].text, /remote images/i);
+  const u = await cap.get("gmail_update_draft").handler({ draft_id: "d1", html });
+  assert.equal(u.isError, true);
+  assert.match(u.content[0].text, /remote images/i);
+});
+
+// --- readAttachmentGuarded ---
+const { readAttachmentGuarded } = await import("./gmail.js");
+const { execFileSync } = await import("node:child_process");
+const DENIED = /Attachment not allowed/;
+
+async function attRoot() {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "gmail-rag-")));
+  return root;
+}
+
+test("readAttachmentGuarded reads a regular file inside the root", async () => {
+  const root = await attRoot();
+  const f = path.join(root, "ok.txt");
+  await fs.writeFile(f, "hello");
+  const data = await readAttachmentGuarded(f, [root], []);
+  assert.equal(data.toString(), "hello");
+});
+
+test("readAttachmentGuarded refuses a directory", async () => {
+  const root = await attRoot();
+  const d = path.join(root, "sub");
+  await fs.mkdir(d);
+  await assert.rejects(readAttachmentGuarded(d, [root], []), DENIED);
+});
+
+test("readAttachmentGuarded refuses a FIFO without hanging", async (t) => {
+  const root = await attRoot();
+  const f = path.join(root, "pipe");
+  try {
+    execFileSync("mkfifo", [f]);
+  } catch {
+    t.skip("mkfifo not available on this platform");
+    return;
+  }
+  await assert.rejects(readAttachmentGuarded(f, [root], []), DENIED);
+});
+
+test("readAttachmentGuarded refuses a file larger than the remaining budget", async () => {
+  const root = await attRoot();
+  const f = path.join(root, "big.bin");
+  await fs.writeFile(f, Buffer.alloc(100));
+  await assert.rejects(readAttachmentGuarded(f, [root], [], 99), DENIED);
+  assert.equal((await readAttachmentGuarded(f, [root], [], 100)).length, 100);
+});
+
+test("readAttachmentGuarded refuses a hard-linked file", async () => {
+  const root = await attRoot();
+  const outside = await attRoot();
+  const secret = path.join(outside, "secret.txt");
+  await fs.writeFile(secret, "s");
+  const linked = path.join(root, "innocent.txt");
+  await fs.link(secret, linked);
+  await assert.rejects(readAttachmentGuarded(linked, [root], []), DENIED);
+});
+
+test("readAttachmentGuarded refuses a symlink swapped in after validation", async () => {
+  const root = await attRoot();
+  const outside = await attRoot();
+  const secret = path.join(outside, "secret.txt");
+  await fs.writeFile(secret, "TOP SECRET");
+  const f = path.join(root, "doc.txt");
+  await fs.writeFile(f, "fine");
+  await assert.rejects(
+    readAttachmentGuarded(f, [root], [], undefined, async (real) => {
+      await fs.rm(real);
+      await fs.symlink(secret, real);
+    }),
+    DENIED
+  );
+});
+
+test("readAttachmentGuarded refuses a swap to a symlink even when the target is inside the root", async () => {
+  const root = await attRoot();
+  const f = path.join(root, "doc.txt");
+  await fs.writeFile(f, "fine");
+  const other = path.join(root, "other.txt");
+  await fs.writeFile(other, "other");
+  await assert.rejects(
+    readAttachmentGuarded(f, [root], [], undefined, async (real) => {
+      await fs.rm(real);
+      await fs.symlink(other, real);
+    }),
+    DENIED
+  );
+});
+
+test("readAttachmentGuarded refusals share one message", async () => {
+  const root = await attRoot();
+  const d = path.join(root, "sub");
+  await fs.mkdir(d);
+  const msgs: string[] = [];
+  for (const p of [d, path.join(root, "missing"), "relative.txt"]) {
+    try {
+      await readAttachmentGuarded(p, [root], []);
+    } catch (e: any) {
+      msgs.push(e.message);
+    }
+  }
+  assert.equal(msgs.length, 3);
+  assert.equal(new Set(msgs).size, 1);
+});
+
 test("filter tool is not registered", () => {
   const names = setup().tools.map((t) => t.name);
   assert.ok(!names.includes("gmail_create_filter"));

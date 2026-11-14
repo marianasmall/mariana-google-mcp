@@ -128,7 +128,7 @@ Earlier versions also asked for full Calendar access (`calendar`) and Gmail sett
 | `gmail_search` | Search messages using Gmail query syntax |
 | `gmail_read` | Read a specific message by ID (full content) |
 | `gmail_list_labels` | List all Gmail labels/folders |
-| `gmail_draft` | Create a draft email: plain text or rich HTML body, optional file attachments, optional reply-in-thread via `thread_id` (does NOT send) |
+| `gmail_draft` | Create a draft email: plain text or rich HTML body, optional file attachments, optional reply-in-thread via `reply_to_message_id` (does NOT send) |
 | `gmail_create_label` | Create a new label (supports nesting with `/`) |
 | `gmail_apply_label` | Apply a label to one or more messages (refuses `TRASH` and `SPAM`) |
 | `gmail_remove_label` | Remove a label from one or more messages (removing `INBOX` archives; recoverable) |
@@ -172,7 +172,7 @@ All configuration is stored in `~/.config/mariana-google-mcp/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Account registry (names, email hashes, defaults) plus the optional `attachmentRoots` and `allowedAttendees` settings below |
+| `config.json` | Account registry (names, email hashes, defaults) plus the optional `attachmentRoots`, `allowedAttendees` and `allowedImageHosts` settings below |
 | `tokens/<hash>.json` | OAuth tokens per account (auto-refreshed) |
 | `action-log.jsonl` | Append-only log of all mutations |
 
@@ -182,12 +182,13 @@ Tokens are stored under a hash of the email address, not the plaintext address, 
 
 ### Settings you can add to `config.json`
 
-Both are optional. Edit `config.json` yourself. No tool changes these two settings, and the attachment guard refuses to read the config directory.
+All three are optional. Edit `config.json` yourself. No tool changes these settings, and the attachment guard refuses to read the config directory.
 
 ```json
 {
   "attachmentRoots": ["/absolute/path/to/outbox", "/absolute/path/to/proposals"],
-  "allowedAttendees": ["partner@example.com", "assistant@example.com"]
+  "allowedAttendees": ["partner@example.com", "assistant@example.com"],
+  "allowedImageHosts": ["images.example.com"]
 }
 ```
 
@@ -203,9 +204,12 @@ The path is resolved to its real location first, so symlinks and `..` cannot be 
 
 **`allowedAttendees`** is a list of addresses that may be added as calendar guests even though they are not in your Google Contacts. See [Calendar guests](#calendar-guests). Default: empty.
 
+**`allowedImageHosts`** is a list of hostnames whose images and styles may appear in an HTML draft. By default an HTML draft containing any remote resource is refused (see [Remote resources in HTML drafts](#remote-resources-in-html-drafts)). An entry lets one reference through only if it is `https:` and its hostname equals the entry exactly (case does not matter). There are no subdomain wildcards, so `example.com` does not allow `images.example.com`, and `http:` is never allowed. Use it for something like an email-signature logo hosted on your own domain. Only list hosts **you control**: whoever runs a listed host sees a request every time a draft is opened. Default: empty.
+
 ### Other input checks
 
-- Carriage returns and line feeds are refused in `to`, `cc` and `bcc` (header injection), on both `gmail_draft` and `gmail_update_draft`.
+- Carriage returns and line feeds are refused in `to`, `cc` and `bcc` (header injection), on both `gmail_draft` and `gmail_update_draft`. Line breaks in the `In-Reply-To` and `References` values are refused too.
+- <a id="remote-resources-in-html-drafts"></a>**Remote resources in HTML drafts are refused** (not stripped) by `gmail_draft` and `gmail_update_draft`, because Gmail loads them when the draft is opened. See "What this does not protect against" below.
 
 ## Calendar guests
 
@@ -213,6 +217,7 @@ The server never sends invites or updates (`sendUpdates` is hardcoded to `"none"
 
 - A guest must be in your **saved Google Contacts** ("My Contacts"), or be listed in `allowedAttendees`, or be your own address. "Other contacts" (people Gmail added because they emailed you) are deliberately not trusted, because a stranger could get themselves added by sending you mail. If an address is not allowed, the event is refused.
 - Writes go only to calendars your account **owns**. Calendars shared with you by other people are refused.
+- A calendar you own but have shared with others, or made public, will expose anything the agent writes there. Checking sharing would need the full calendar scope, which this build deliberately dropped.
 - If an event already has a guest who is not allowed, `calendar_update` refuses to change the **title, description or location** (the guests would read the new text). Changing the time is still allowed.
 - If the contacts lookup itself fails, the check fails closed: only `allowedAttendees` guests pass.
 
@@ -226,13 +231,14 @@ Every write operation (drafts, label changes, calendar creates/updates, soft-del
 {"timestamp":"2026-04-03T10:30:00.000Z","tool":"gmail_draft","account":"primary","summary":"Draft created: subject='Meeting follow-up'"}
 ```
 
-Failed and refused write attempts are logged as well, with an `outcome` of `"failed"` or `"refused"`. The message is short (about 300 characters), newlines are collapsed, and credential-shaped strings (bearer tokens, Google access and refresh tokens) are redacted. The log does not store request bodies or message text; a draft entry records the subject and recipient.
+Failed and refused write attempts are logged as well, with an `outcome` of `"failed"` or `"refused"`. The message is short (about 300 characters), newlines are collapsed, and credential-shaped strings (bearer tokens, Google access and refresh tokens) are redacted. The log does not store request bodies or message text; a draft entry records the subject and the To, Cc and Bcc recipients.
 
 The server only ever appends to the log. Review it anytime to audit what Claude has done. (Anything with write access to your account directory could edit it, so treat it as an audit aid, not tamper-proof evidence.)
 
 ## What this does not protect against
 
-- **HTML in drafts.** `gmail_draft` and `gmail_update_draft` accept a raw HTML body, which can include remote images (tracking pixels) or links. This is a known, accepted risk: every draft is meant to be reviewed by you before you send it. If you do not read drafts before sending, do not rely on this.
+- **Opening a draft is enough to leak through remote images.** Gmail loads remote images and stylesheets as soon as you open a draft, with no click, so an injected instruction could hide your data in an image URL. That is why `gmail_draft` and `gmail_update_draft` now refuse an HTML body that references anything remote (`src`, `srcset`, `background`, CSS `url(...)`, and similar; `cid:` and `data:` images are fine, and plain `<a href>` links are allowed because they need a click). Hosts you list in `allowedImageHosts` are the one exception. Plain-text drafts are unaffected.
+- **A draft Claude prepared or edited.** Before sending any draft Claude created or changed, check To, Cc, Bcc and the attachments. An injected instruction could address a draft to a stranger or attach a file from an allowed folder, and `gmail_update_draft` can change a draft you wrote yourself.
 - **Mail the agent reads.** Anything in your inbox or calendar can contain instructions aimed at the agent (prompt injection). The tools above limit what a hijacked agent can do, but they do not stop it from reading, labeling, archiving or drafting.
 - **Anything else holding your token.** The `gmail.modify` scope can send mail at Google's level. This server never does, but another program with access to the token file could. That is why the tokens are `0600` and the config directory `0700`.
 - **A broad `attachmentRoots`.** See above: you decide what is attachable.

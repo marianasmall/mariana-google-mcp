@@ -163,4 +163,99 @@ test("config resolvers apply defaults and overrides", () => {
   assert.deepEqual(config.getAllowedAttendees(base), []);
   assert.deepEqual(config.getAttachmentRoots({ ...base, attachmentRoots: ["/x"] }), ["/x"]);
   assert.deepEqual(config.getAllowedAttendees({ ...base, allowedAttendees: ["a@x.com"] }), ["a@x.com"]);
+  assert.deepEqual(config.getAllowedImageHosts(base), []);
+  assert.deepEqual(config.getAllowedImageHosts({ ...base, allowedImageHosts: ["images.example.com"] }), ["images.example.com"]);
+});
+
+test("sensitive id_* basenames match case-insensitively", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "guards-id-"));
+  await fs.writeFile(path.join(root, "ID_RSA"), "x");
+  await assert.rejects(guards.resolveAttachmentPath(path.join(root, "ID_RSA"), [root], []), /Attachment not allowed/);
+});
+
+const REMOTE_BYPASSES: Record<string, string> = {
+  "plain https img": `<img src="https://evil.test/p.png">`,
+  "plain http img": `<img src="http://evil.test/p.png">`,
+  "uppercase SRC and scheme": `<IMG SRC="HTTPS://EVIL.TEST/p.png">`,
+  "single quotes": `<img src='https://evil.test/p.png'>`,
+  "no quotes": `<img src=https://evil.test/p.png>`,
+  "spaces around equals": `<img src  =  "https://evil.test/p.png">`,
+  "slash instead of space": `<img/src="https://evil.test/p.png">`,
+  "protocol-relative": `<img src="//evil.test/p.png">`,
+  "backslash protocol-relative": `<img src="\\\\evil.test/p.png">`,
+  "srcset multiple urls": `<img srcset="cid:a 1x, https://evil.test/b.png 2x">`,
+  "srcset second url no space": `<img srcset="cid:a 1x,https://evil.test/b.png 2x">`,
+  "background attribute": `<table background="https://evil.test/b.png"></table>`,
+  "css url with spaces": `<div style="background: url(  'https://evil.test/b.png'  )"></div>`,
+  "css url unquoted": `<style>p{background:url(https://evil.test/b.png)}</style>`,
+  "style attr background-image": `<div style="background-image:url(//evil.test/x.png)"></div>`,
+  "css @import string": `<style>@import "https://evil.test/a.css";</style>`,
+  "css @import url": `<style>@import url(https://evil.test/a.css);</style>`,
+  "css image-set": `<div style="background:image-set('https://evil.test/a.png' 1x)"></div>`,
+  "entity-encoded scheme decimal": `<img src="&#104;ttp://evil.test/p.png">`,
+  "entity-encoded scheme hex": `<img src="&#x68;&#x74;&#x74;&#x70;s://evil.test/p.png">`,
+  "entity-encoded colon": `<img src="https&colon;//evil.test/p.png">`,
+  "entity without semicolon": `<img src="&#104ttp://evil.test/p.png">`,
+  "double-encoded": `<img src="&amp;#104;ttp://evil.test/p.png">`,
+  "tab inside scheme": `<img src="ht&Tab;tp://evil.test/p.png">`,
+  "entity in css url": `<div style="background:url(&#104;ttp://evil.test/x.png)"></div>`,
+  "css escape in url": `<style>p{background:u\\72l(https://evil.test/x.png)}</style>`,
+  "css escaped scheme": `<style>p{background:url(\\68 ttps://evil.test/x.png)}</style>`,
+  "link stylesheet": `<link rel="stylesheet" href="https://evil.test/a.css">`,
+  "quote-hidden gt before href": `<link title=">" rel="stylesheet" href="https://evil.test/a.css">`,
+  "svg image href": `<svg><image href="https://evil.test/a.png"/></svg>`,
+  "base href": `<base href="https://evil.test/">`,
+  "iframe src": `<iframe src="https://evil.test/"></iframe>`,
+  "video poster": `<video poster="https://evil.test/a.png"></video>`,
+  "relative src (fail closed)": `<img src="logo.png">`,
+  "unterminated tag": `<img src="https://evil.test/p.png"`,
+};
+
+for (const [name, html] of Object.entries(REMOTE_BYPASSES)) {
+  test(`assertNoRemoteResources refuses: ${name}`, () => {
+    assert.throws(
+      () => guards.assertNoRemoteResources(`<p>hi</p>${html}`),
+      (e: any) => e instanceof guards.GuardError && /remote images/i.test(e.message) && /plain-text/.test(e.message) && /by hand/.test(e.message)
+    );
+  });
+}
+
+test("assertNoRemoteResources allows cid:, data:, plain links, plain text", () => {
+  for (const html of [
+    `<p>Hello <b>there</b></p>`,
+    `<img src="cid:logo123">`,
+    `<img src="data:image/png;base64,//8AAA==">`,
+    `<img srcset="data:image/png;base64,AAAA 1x, cid:b 2x">`,
+    `<a href="https://example.com/page">click</a>`,
+    `<a href='http://example.com'>click</a>`,
+    `<div style="color:red;background:url(data:image/png;base64,AAAA)"></div>`,
+    `<div style="background:url(cid:bg)"></div>`,
+    `<p>Tom &amp; Jerry &#169; 2026</p>`,
+  ]) {
+    assert.doesNotThrow(() => guards.assertNoRemoteResources(html), html);
+  }
+});
+
+test("assertNoRemoteResources allowedImageHosts: exact https host only", () => {
+  const allow = ["Example.com"];
+  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<img src="https://example.com/logo.png">`, allow));
+  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<img src="HTTPS://EXAMPLE.COM/logo.png">`, allow));
+  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<div style="background:url('https://example.com/b.png')"></div>`, allow));
+  assert.doesNotThrow(() => guards.assertNoRemoteResources(`<img srcset="https://example.com/a.png 1x, cid:b 2x">`, allow));
+  for (const bad of [
+    "https://example.com.evil.test/logo.png",
+    "https://evil-example.com/logo.png",
+    "https://images.example.com/logo.png",
+    "https://evil.test/https://example.com/logo.png",
+    "https://example.com@evil.test/logo.png",
+    "https://evil.test@example.com/logo.png",
+    "http://example.com/logo.png",
+    "//example.com/logo.png",
+    "https://example.com.@evil.test/x.png",
+  ]) {
+    assert.throws(() => guards.assertNoRemoteResources(`<img src="${bad}">`, allow), guards.GuardError, bad);
+  }
+  // Default (no allowed hosts) still refuses.
+  assert.throws(() => guards.assertNoRemoteResources(`<img src="https://example.com/logo.png">`), guards.GuardError);
+  assert.throws(() => guards.assertNoRemoteResources(`<img srcset="https://example.com.evil.test/a.png 1x">`, allow), guards.GuardError);
 });
