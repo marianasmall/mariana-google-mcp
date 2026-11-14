@@ -6,7 +6,7 @@ import * as path from "path";
 import { getAuthClient } from "./auth.js";
 import { logAction } from "./logger.js";
 import * as os from "os";
-import { GuardError, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
+import { GuardError, assertSafeAddLabels, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
 import { loadConfig, getAttachmentRoots, getConfigDir, getTokensDir } from "./config.js";
 
 function guardErrorResult(err: unknown) {
@@ -629,18 +629,12 @@ export function registerGmailTools(server: McpServer): void {
   // --- gmail_delete_draft ---
   server.tool(
     "gmail_delete_draft",
-    "Delete a Gmail draft. Moves it to Trash by default (recoverable for 30 days). Set permanent:true only when it must be unrecoverable. Get the draft ID from gmail_list_drafts.",
+    "Delete a Gmail draft by moving it to Trash (recoverable for 30 days; the user empties Trash). Get the draft ID from gmail_list_drafts.",
     {
       draft_id: z.string().describe("Draft ID (from gmail_list_drafts)"),
-      permanent: z
-        .boolean()
-        .optional()
-        .describe(
-          "Default false: the draft goes to Trash and can be restored. True deletes it outright with no recovery path — only for genuinely disposable drafts."
-        ),
       account: z.string().optional().describe("Account name (default: primary)"),
     },
-    async ({ draft_id, permanent, account }) => {
+    async ({ draft_id, account }) => {
       const { client, accountName } = await getAuthClient(account);
       const gmail = google.gmail({ version: "v1", auth: client });
 
@@ -655,17 +649,11 @@ export function registerGmailTools(server: McpServer): void {
         headers.find((h: any) => h.name?.toLowerCase() === "subject")?.value ?? "(no subject)";
       const messageId = existing.data.message?.id;
 
-      let outcome: string;
-      if (permanent) {
-        await gmail.users.drafts.delete({ userId: "me", id: draft_id });
-        outcome = "permanently deleted (no recovery)";
-      } else {
-        // Trashing the underlying message removes it from Drafts while leaving it
-        // restorable, which the drafts.delete endpoint cannot do.
-        if (!messageId) throw new Error("Draft has no message id; cannot trash it. Use permanent:true to remove it outright.");
-        await gmail.users.messages.trash({ userId: "me", id: messageId });
-        outcome = "moved to Trash (restorable for 30 days)";
-      }
+      // Trashing the underlying message removes it from Drafts while leaving it
+      // restorable, which the drafts.delete endpoint cannot do.
+      if (!messageId) throw new Error("Draft has no message id; cannot move it to Trash.");
+      await gmail.users.messages.trash({ userId: "me", id: messageId });
+      const outcome = "moved to Trash (restorable for 30 days)";
 
       await logAction({
         timestamp: new Date().toISOString(),
@@ -730,6 +718,13 @@ export function registerGmailTools(server: McpServer): void {
       account: z.string().optional().describe("Account name (default: primary)"),
     },
     async ({ message_ids, label_id, account }) => {
+      try {
+        assertSafeAddLabels([label_id]);
+      } catch (err) {
+        const r = guardErrorResult(err);
+        if (r) return r;
+        throw err;
+      }
       const { client, accountName } = await getAuthClient(account);
       const gmail = google.gmail({ version: "v1", auth: client });
 
@@ -798,77 +793,6 @@ export function registerGmailTools(server: McpServer): void {
           {
             type: "text" as const,
             text: `Removed label from ${removed} message(s).`,
-          },
-        ],
-      };
-    }
-  );
-
-  // --- gmail_create_filter ---
-  server.tool(
-    "gmail_create_filter",
-    "Create a Gmail filter rule. Matches messages by criteria and applies actions automatically. At least one criterion and one action required.",
-    {
-      from: z.string().optional().describe("Match sender (e.g. 'newsletter@example.com')"),
-      to: z.string().optional().describe("Match recipient"),
-      subject: z.string().optional().describe("Match subject (substring)"),
-      query: z.string().optional().describe("Gmail search query for advanced matching"),
-      add_label_ids: z.array(z.string()).optional().describe("Label IDs to apply to matching messages"),
-      remove_label_ids: z.array(z.string()).optional().describe("Label IDs to remove (e.g. 'INBOX' to archive)"),
-      mark_read: z.boolean().optional().describe("Mark matching messages as read"),
-      star: z.boolean().optional().describe("Star matching messages"),
-      forward: z.string().optional().describe("Email address to forward matching messages to"),
-      account: z.string().optional().describe("Account name (default: primary)"),
-    },
-    async ({ from, to, subject, query, add_label_ids, remove_label_ids, mark_read, star, forward, account }) => {
-      const { client, accountName } = await getAuthClient(account);
-      const gmail = google.gmail({ version: "v1", auth: client });
-
-      const criteria: Record<string, string> = {};
-      if (from) criteria.from = from;
-      if (to) criteria.to = to;
-      if (subject) criteria.subject = subject;
-      if (query) criteria.query = query;
-
-      if (Object.keys(criteria).length === 0) {
-        return {
-          content: [{ type: "text" as const, text: "Error: At least one criterion (from, to, subject, query) is required." }],
-          isError: true,
-        };
-      }
-
-      const action: Record<string, any> = {};
-      if (add_label_ids) action.addLabelIds = add_label_ids;
-      if (remove_label_ids) action.removeLabelIds = remove_label_ids;
-      if (mark_read) action.removeLabelIds = [...(action.removeLabelIds || []), "UNREAD"];
-      if (star) action.addLabelIds = [...(action.addLabelIds || []), "STARRED"];
-      if (forward) action.forward = forward;
-
-      if (Object.keys(action).length === 0) {
-        return {
-          content: [{ type: "text" as const, text: "Error: At least one action (add_label_ids, remove_label_ids, mark_read, star, forward) is required." }],
-          isError: true,
-        };
-      }
-
-      const res = await gmail.users.settings.filters.create({
-        userId: "me",
-        requestBody: { criteria, action },
-      });
-
-      const criteriaDesc = Object.entries(criteria).map(([k, v]) => `${k}:${v}`).join(", ");
-      await logAction({
-        timestamp: new Date().toISOString(),
-        tool: "gmail_create_filter",
-        account: accountName,
-        summary: `Created filter: ${criteriaDesc} (ID: ${res.data.id})`,
-      });
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({ id: res.data.id, criteria: res.data.criteria, action: res.data.action }, null, 2),
           },
         ],
       };

@@ -56,6 +56,27 @@ test("gmail_draft rejects a disallowed attachment with one uniform message", asy
   assert.ok(!msgs[0].includes(dir));
 });
 
+test("filter tool is not registered", () => {
+  const names = setup().tools.map((t) => t.name);
+  assert.ok(!names.includes("gmail_create_filter"));
+  assert.ok(!names.some((n) => /filter/i.test(n)));
+});
+
+test("gmail_delete_draft has no permanent option and does not mention permanent deletion", () => {
+  const t = setup().get("gmail_delete_draft");
+  assert.ok(!("permanent" in t.schema));
+  assert.ok(!/permanent/i.test(t.desc));
+});
+
+test("gmail_apply_label refuses TRASH and SPAM before any Google call", async () => {
+  const t = setup().get("gmail_apply_label");
+  for (const label_id of ["TRASH", "SPAM"]) {
+    const res = await t.handler({ message_ids: ["m1"], label_id });
+    assert.equal(res.isError, true, label_id);
+    assert.match(res.content[0].text, new RegExp(label_id));
+  }
+});
+
 test("gmail_update_draft rejects CR/LF in to/cc/bcc before any network call", async () => {
   const t = setup().get("gmail_update_draft");
   for (const field of ["to", "cc", "bcc"]) {
