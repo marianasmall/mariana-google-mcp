@@ -14,14 +14,17 @@ import {
   resolveAccount,
 } from "./config.js";
 
-const SCOPES = [
+// Least-privilege scopes. gmail.modify covers read, drafts, labels and trash
+// (it replaces readonly/compose/labels); filters are gone so settings.basic is
+// dropped. calendar.events + calendarlist.readonly replace the full calendar
+// scope. calendar.freebusy is needed because freebusy.query does not accept
+// calendar.events or calendarlist.readonly.
+export const SCOPES = [
   "https://www.googleapis.com/auth/userinfo.email",
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/gmail.modify",
-  "https://www.googleapis.com/auth/gmail.labels",
-  "https://www.googleapis.com/auth/gmail.settings.basic",
-  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+  "https://www.googleapis.com/auth/calendar.freebusy",
   "https://www.googleapis.com/auth/contacts.readonly",
 ];
 

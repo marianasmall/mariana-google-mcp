@@ -30,3 +30,16 @@ test("callback after first valid one is 410", () => {
 test("valid callback proceeds", () => {
   assert.deepEqual(decideCallback({ state: S, code: "c" }, S, false), { status: 200, proceed: true });
 });
+
+test("SCOPES is the exact least-privilege list, in order", async () => {
+  const { SCOPES } = await import("./auth.js");
+  const p = "https://www.googleapis.com/auth/";
+  assert.deepEqual(SCOPES, [
+    p + "userinfo.email",
+    p + "gmail.modify",
+    p + "calendar.events",
+    p + "calendar.calendarlist.readonly",
+    p + "calendar.freebusy",
+    p + "contacts.readonly",
+  ]);
+});

@@ -86,6 +86,8 @@ Replace `/path/to/` with the actual path to your clone, and fill in your OAuth c
 
 After restarting Claude Code, run the `google_auth` tool. It will open a browser window for OAuth consent. Once authorized, your token is stored locally and refreshed automatically.
 
+Scopes requested: `userinfo.email`, `gmail.modify`, `calendar.events`, `calendar.calendarlist.readonly`, `calendar.freebusy`, `contacts.readonly`. After upgrading, re-run google_auth for each account so the token carries only these scopes.
+
 ## Available Tools (23)
 
 ### Authentication & Status
