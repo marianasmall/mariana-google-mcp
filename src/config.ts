@@ -36,11 +36,23 @@ export function hashEmail(email: string): string {
 export function getTokenPath(emailHash: string): string {
   return path.join(TOKENS_DIR, `${emailHash}.json`);
 }
+/** chmod that never follows a symlink: a link inside the config dir must not
+ * redirect a permission change to a file elsewhere. Missing paths are ignored. */
+export async function safeChmod(p: string, mode: number): Promise<void> {
+  try {
+    const st = await fs.lstat(p);
+    if (st.isSymbolicLink()) return;
+    await fs.chmod(p, mode);
+  } catch (err: any) {
+    if (err?.code !== "ENOENT") throw err;
+  }
+}
 export async function ensureDirs(): Promise<void> {
-  await fs.mkdir(CONFIG_DIR, { recursive: true });
+  await fs.mkdir(CONFIG_DIR, { recursive: true, mode: 0o700 });
   await fs.mkdir(TOKENS_DIR, { recursive: true, mode: 0o700 });
   // mkdir's mode only applies on creation; enforce on every start.
-  await fs.chmod(TOKENS_DIR, 0o700);
+  await safeChmod(CONFIG_DIR, 0o700);
+  await safeChmod(TOKENS_DIR, 0o700);
 }
 export async function loadConfig(): Promise<AppConfig> {
   try {
@@ -50,7 +62,8 @@ export async function loadConfig(): Promise<AppConfig> {
 }
 export async function saveConfig(config: AppConfig): Promise<void> {
   await ensureDirs();
-  await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
+  await fs.writeFile(CONFIG_PATH, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
+  await safeChmod(CONFIG_PATH, 0o600);
 }
 export async function addAccount(name: string, email: string): Promise<AppConfig> {
   const config = await loadConfig();

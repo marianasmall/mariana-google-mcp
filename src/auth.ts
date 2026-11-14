@@ -7,6 +7,7 @@ import * as fs from "fs/promises";
 import open from "open";
 import {
   ensureDirs,
+  safeChmod,
   getTokenPath,
   hashEmail,
   addAccount,
@@ -64,7 +65,7 @@ async function saveToken(emailHash: string, tokens: Credentials): Promise<void> 
   // Owner-only: these are live credentials. mode applies on creation; chmod
   // covers files that already existed with looser permissions.
   await fs.writeFile(tokenPath, JSON.stringify(tokens, null, 2), { encoding: "utf-8", mode: 0o600 });
-  await fs.chmod(tokenPath, 0o600);
+  await safeChmod(tokenPath, 0o600);
 }
 
 async function loadToken(emailHash: string): Promise<Credentials | null> {

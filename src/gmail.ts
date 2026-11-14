@@ -4,7 +4,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { promises as fs } from "fs";
 import * as path from "path";
 import { getAuthClient } from "./auth.js";
-import { logAction } from "./logger.js";
+import { logAction, withWriteLogging } from "./logger.js";
 import * as os from "os";
 import { GuardError, assertSafeAddLabels, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
 import { loadConfig, getAttachmentRoots, getConfigDir, getTokensDir } from "./config.js";
@@ -131,7 +131,8 @@ const encodeHeaderValue = (value: string): string => {
     .join("\r\n ");
 };
 
-export function registerGmailTools(server: McpServer): void {
+export function registerGmailTools(rawServer: McpServer): void {
+  const server = withWriteLogging(rawServer);
   // --- gmail_search ---
   server.tool(
     "gmail_search",

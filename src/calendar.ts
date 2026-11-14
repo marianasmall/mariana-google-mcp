@@ -2,7 +2,7 @@ import { google, calendar_v3 } from "googleapis";
 import { z } from "zod";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getAuthClient } from "./auth.js";
-import { logAction } from "./logger.js";
+import { logAction, withWriteLogging } from "./logger.js";
 import { GuardError, assertAttendeesAllowed } from "./guards.js";
 import { loadConfig, getAllowedAttendees } from "./config.js";
 import { getContactEmails } from "./contacts.js";
@@ -95,7 +95,8 @@ function formatEvent(event: any) {
   };
 }
 
-export function registerCalendarTools(server: McpServer, deps: CalendarDeps = {}): void {
+export function registerCalendarTools(rawServer: McpServer, deps: CalendarDeps = {}): void {
+  const server = withWriteLogging(rawServer);
   const authFor = deps.getAuthClient ?? getAuthClient;
   const contactsFor = deps.getContactEmails ?? ((auth: any, key: string) => getContactEmails(auth, key));
   const makeCal = deps.makeCalendar ?? ((auth: any) => google.calendar({ version: "v3", auth }));
