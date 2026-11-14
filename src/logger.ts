@@ -21,13 +21,27 @@ export async function logAction(entry: ActionLogEntry): Promise<void> {
 }
 
 /**
+ * Collapse newlines and redact credential-shaped strings. Used for every
+ * failure/refusal message, before truncation, so a secret cannot survive by
+ * sitting inside the first 300 characters.
+ */
+export function sanitizeErrorText(text: string): string {
+  return text
+    .replace(/\s*[\r\n]+\s*/g, " ")
+    .replace(/Bearer\s+\S+/gi, "[redacted]")
+    .replace(/ya29\.[\w-]+/g, "[redacted]")
+    .replace(/1\/\/[\w-]+/g, "[redacted]")
+    .replace(/(refresh|access)_token["'=:\s]+\S+/gi, "[redacted]");
+}
+
+/**
  * Record a failed or refused write attempt. Logs only the tool, the account
  * name and a short error message: never tokens, headers, request bodies or
  * email text. Never throws, so it cannot mask the original error.
  */
 export async function logFailure(tool: string, account: string, error: unknown): Promise<void> {
   try {
-    const raw = error instanceof Error ? error.message : String(error);
+    const raw = sanitizeErrorText(error instanceof Error ? error.message : String(error));
     const msg = raw.length > MAX_ERROR_CHARS ? raw.slice(0, MAX_ERROR_CHARS) + "..." : raw;
     const refused = error instanceof GuardError;
     await logAction({

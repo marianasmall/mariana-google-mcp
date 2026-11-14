@@ -119,3 +119,22 @@ test("every write tool in gmail and calendar is wired to the failure log", async
   assert.equal(e.outcome, "refused");
   assert.doesNotMatch(JSON.stringify(e), /Bcc: x@example\.com/);
 });
+
+test("failure and refusal messages are sanitised before truncation", async () => {
+  const fake = "ya29.FAKE-test-token";
+  const msgs: unknown[] = [
+    new Error(`API said:\nAuthorization: Bearer ${fake} rejected`),
+    new Error(`bad refresh_token: 1//FAKE-test-refresh and ${fake}`),
+    new GuardError(`Refused\r\nBearer ${fake}`),
+    new Error("x".repeat(290) + ` ${fake}`),
+  ];
+  for (const m of msgs) await logFailure("gmail_draft", "primary", m);
+  const entries = (await readLog()).slice(-msgs.length);
+  for (const e of entries) {
+    assert.doesNotMatch(e.summary, /FAKE-test/);
+    assert.doesNotMatch(e.summary, /[\r\n]/);
+    assert.ok(e.summary.length <= 400);
+  }
+  assert.match(entries[0].summary, /\[redacted\]/);
+  assert.equal(entries[2].outcome, "refused");
+});
