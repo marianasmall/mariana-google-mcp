@@ -71,13 +71,18 @@ export async function resolveAttachmentPath(
 ): Promise<string> {
   const real = await checkAttachmentPath(p, roots, forbiddenDirs);
   if (real === null) {
-    throw new GuardError(
-      `Attachment not allowed. Attach only an existing file inside one of these folders: ${roots.join(", ")}, ` +
-        "not inside a hidden folder or a credentials folder. Save the file into one of those folders, " +
-        "or ask the user to add a folder to attachmentRoots in config.json."
-    );
+    throw new GuardError(attachmentDeniedMessage(roots));
   }
   return real;
+}
+
+/** The single message used for every attachment rejection (shared with callers that must not leak more). */
+export function attachmentDeniedMessage(roots: string[]): string {
+  return (
+    `Attachment not allowed. Attach only an existing file inside one of these folders: ${roots.join(", ")}, ` +
+    "not inside a hidden folder or a credentials folder. Save the file into one of those folders, " +
+    "or ask the user to add a folder to attachmentRoots in config.json."
+  );
 }
 
 export function assertNoCRLF(field: string, value: string | undefined): void {

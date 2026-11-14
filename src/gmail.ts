@@ -5,6 +5,36 @@ import { promises as fs } from "fs";
 import * as path from "path";
 import { getAuthClient } from "./auth.js";
 import { logAction } from "./logger.js";
+import * as os from "os";
+import { GuardError, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
+import { loadConfig, getAttachmentRoots, getConfigDir, getTokensDir } from "./config.js";
+
+function guardErrorResult(err: unknown) {
+  if (err instanceof GuardError) {
+    return { content: [{ type: "text" as const, text: err.message }], isError: true as const };
+  }
+  return null;
+}
+
+/**
+ * Validate an attachment path, then open it, fstat the handle (must be a
+ * regular file) and read from that same handle, so the file cannot be swapped
+ * between check and read. Every failure yields the same GuardError message.
+ */
+async function readAttachmentGuarded(filePath: string, roots: string[], forbidden: string[]): Promise<Buffer> {
+  const real = await resolveAttachmentPath(filePath, roots, forbidden);
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(real, "r");
+    const st = await handle.stat();
+    if (!st.isFile()) throw new Error("not a regular file");
+    return await handle.readFile();
+  } catch {
+    throw new GuardError(attachmentDeniedMessage(roots));
+  } finally {
+    await handle?.close();
+  }
+}
 
 const ATTACHMENT_MIME_TYPES: Record<string, string> = {
   pdf: "application/pdf",
@@ -252,7 +282,9 @@ export function registerGmailTools(server: McpServer): void {
       attachments: z
         .array(z.string())
         .optional()
-        .describe("Absolute file paths to attach (PDF, images, docs; 20MB total max)"),
+        .describe(
+          "Absolute file paths to attach (PDF, images, docs; 20MB total max). Files must be inside an allowed folder: by default ~/Projects, ~/Documents, ~/Downloads, ~/Desktop, ~/Library/CloudStorage (configurable via attachmentRoots in config.json). Hidden folders and credential folders are refused."
+        ),
       reply_to_message_id: z
         .string()
         .optional()
@@ -268,6 +300,37 @@ export function registerGmailTools(server: McpServer): void {
       account: z.string().optional().describe("Account name (default: primary)"),
     },
     async ({ to, subject, body, html, cc, bcc, attachments, reply_to_message_id, thread_id, account }) => {
+      // Guards run before any network or auth work.
+      const loaded: { filePath: string; data: Buffer }[] = [];
+      try {
+        assertNoCRLF("to", to);
+        assertNoCRLF("cc", cc);
+        assertNoCRLF("bcc", bcc);
+        if (attachments && attachments.length > 0) {
+          const config = await loadConfig();
+          const roots = getAttachmentRoots(config);
+          const forbidden = [
+            getConfigDir(),
+            getTokensDir(),
+            path.join(os.homedir(), ".claude"),
+            path.join(os.homedir(), ".ssh"),
+          ];
+          let totalBytes = 0;
+          for (const filePath of attachments) {
+            const data = await readAttachmentGuarded(filePath, roots, forbidden);
+            totalBytes += data.length;
+            if (totalBytes > MAX_ATTACHMENT_BYTES) {
+              throw new Error(`Attachments exceed ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB total`);
+            }
+            loaded.push({ filePath, data });
+          }
+        }
+      } catch (err) {
+        const r = guardErrorResult(err);
+        if (r) return r;
+        throw err;
+      }
+
       const { client, accountName } = await getAuthClient(account);
       const gmail = google.gmail({ version: "v1", auth: client });
 
@@ -293,16 +356,10 @@ export function registerGmailTools(server: McpServer): void {
       ];
 
       let rawMessage: string;
-      if (attachments && attachments.length > 0) {
+      if (loaded.length > 0) {
         const boundary = `mixed_${Date.now().toString(36)}_mcp`;
         const parts: string[] = [`--${boundary}\r\n${contentType}\r\n\r\n${content}`];
-        let totalBytes = 0;
-        for (const filePath of attachments) {
-          const data = await fs.readFile(filePath);
-          totalBytes += data.length;
-          if (totalBytes > MAX_ATTACHMENT_BYTES) {
-            throw new Error(`Attachments exceed ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB total`);
-          }
+        for (const { filePath, data } of loaded) {
           const name =
             path.basename(filePath).replace(/[\r\n"\\]/g, "_").trim() || "attachment";
           // Same header-charset problem as Subject: quoted filename params must
@@ -439,6 +496,16 @@ export function registerGmailTools(server: McpServer): void {
       account: z.string().optional().describe("Account name (default: primary)"),
     },
     async ({ draft_id, to, subject, body, html, cc, bcc, account }) => {
+      try {
+        assertNoCRLF("to", to);
+        assertNoCRLF("cc", cc);
+        assertNoCRLF("bcc", bcc);
+      } catch (err) {
+        const r = guardErrorResult(err);
+        if (r) return r;
+        throw err;
+      }
+
       const { client, accountName } = await getAuthClient(account);
       const gmail = google.gmail({ version: "v1", auth: client });
 
@@ -464,6 +531,16 @@ export function registerGmailTools(server: McpServer): void {
       const finalSubject = subject ?? header("Subject");
       const finalCc = cc ?? header("Cc");
       const finalBcc = bcc ?? header("Bcc");
+      // Inherited header values can also carry line breaks; check the final values.
+      try {
+        assertNoCRLF("to", finalTo);
+        assertNoCRLF("cc", finalCc);
+        assertNoCRLF("bcc", finalBcc);
+      } catch (err) {
+        const r = guardErrorResult(err);
+        if (r) return r;
+        throw err;
+      }
 
       let finalContent: string;
       let isHtml: boolean;
