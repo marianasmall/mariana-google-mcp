@@ -2,6 +2,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import * as os from "os";
 import * as crypto from "crypto";
+import { GuardError } from "./guards.js";
 
 const CONFIG_DIR = path.join(
   process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"),
@@ -53,7 +54,14 @@ export async function saveConfig(config: AppConfig): Promise<void> {
 }
 export async function addAccount(name: string, email: string): Promise<AppConfig> {
   const config = await loadConfig();
-  config.accounts[name] = { label: name, emailHash: hashEmail(email) };
+  const emailHash = hashEmail(email);
+  const existing = config.accounts[name];
+  if (existing && existing.emailHash !== emailHash) {
+    throw new GuardError(
+      `Account name '${name}' is already bound to a different Google account. Use a new name, or ask the owner to remove the old one first.`
+    );
+  }
+  config.accounts[name] = { label: name, emailHash };
   if (Object.keys(config.accounts).length === 1) config.defaultGmailAccount = name;
   await saveConfig(config);
   return config;

@@ -1,6 +1,8 @@
 import { google } from "googleapis";
-import { OAuth2Client, Credentials } from "google-auth-library";
+import { OAuth2Client, Credentials, CodeChallengeMethod } from "google-auth-library";
 import * as http from "http";
+import * as crypto from "crypto";
+import { escapeHtml } from "./guards.js";
 import * as fs from "fs/promises";
 import open from "open";
 import {
@@ -37,6 +39,20 @@ function getClientCredentials(): { clientId: string; clientSecret: string } {
 function createOAuth2Client(redirectUri: string): OAuth2Client {
   const { clientId, clientSecret } = getClientCredentials();
   return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+}
+
+/**
+ * Pure decision for an OAuth callback request: wrong/missing state or missing
+ * code -> 400 (no token exchange); already handled -> 410; otherwise proceed.
+ */
+export function decideCallback(
+  params: { state: string | null; code: string | null },
+  expectedState: string,
+  alreadyHandled: boolean
+): { status: 200 | 400 | 410; proceed: boolean } {
+  if (alreadyHandled) return { status: 410, proceed: false };
+  if (params.state !== expectedState || !params.code) return { status: 400, proceed: false };
+  return { status: 200, proceed: true };
 }
 
 async function saveToken(emailHash: string, tokens: Credentials): Promise<void> {
@@ -85,7 +101,8 @@ export async function startOAuthFlow(
       reject(new Error("OAuth flow timed out after 15 minutes without consent"));
     }, 15 * 60 * 1000);
 
-    server.listen(0, async () => {
+    // Loopback only: never reachable from other machines on the network.
+    server.listen(0, "127.0.0.1", async () => {
       const address = server.address();
       if (!address || typeof address === "string") {
         clearTimeout(timeout);
@@ -95,28 +112,48 @@ export async function startOAuthFlow(
         return;
       }
       const port = address.port;
-      const redirectUri = `http://localhost:${port}`;
+      const redirectUri = `http://127.0.0.1:${port}`;
       const oauth2Client = createOAuth2Client(redirectUri);
+
+      // state defends against forged callbacks (CSRF); PKCE binds the code
+      // exchange to this process.
+      const state = crypto.randomBytes(32).toString("hex");
+      const { codeVerifier, codeChallenge } = await oauth2Client.generateCodeVerifierAsync();
 
       const authUrl = oauth2Client.generateAuthUrl({
         access_type: "offline",
         scope: SCOPES,
         prompt: "consent",
+        state,
+        code_challenge: codeChallenge,
+        code_challenge_method: CodeChallengeMethod.S256,
       });
       resolveUrl(authUrl);
 
+      let handled = false;
+
       server.on("request", async (req, res) => {
         try {
-          const url = new URL(req.url || "", `http://localhost:${port}`);
+          const url = new URL(req.url || "", `http://127.0.0.1:${port}`);
           const code = url.searchParams.get("code");
+          const decision = decideCallback(
+            { state: url.searchParams.get("state"), code },
+            state,
+            handled
+          );
 
-          if (!code) {
-            res.writeHead(400, { "Content-Type": "text/html" });
-            res.end("<h1>Error: No authorization code received</h1>");
+          if (!decision.proceed) {
+            res.writeHead(decision.status, { "Content-Type": "text/html" });
+            res.end(
+              decision.status === 410
+                ? "<h1>This sign-in link was already used</h1>"
+                : "<h1>Error: invalid sign-in callback</h1>"
+            );
             return;
           }
+          handled = true;
 
-          const { tokens } = await oauth2Client.getToken(code);
+          const { tokens } = await oauth2Client.getToken({ code: code!, codeVerifier });
           oauth2Client.setCredentials(tokens);
 
           // Get the email address for this account
@@ -129,12 +166,14 @@ export async function startOAuthFlow(
           }
 
           const emailHash = hashEmail(email);
-          await saveToken(emailHash, tokens);
+          // Bind the name first: if it belongs to a different Google account
+          // this throws, and no orphan token is written.
           await addAccount(accountName, email);
+          await saveToken(emailHash, tokens);
 
           res.writeHead(200, { "Content-Type": "text/html" });
           res.end(
-            `<h1>Authorization successful!</h1><p>Account "${accountName}" (${email}) connected. You can close this tab.</p>`
+            `<h1>Authorization successful!</h1><p>Account "${escapeHtml(accountName)}" (${escapeHtml(email)}) connected. You can close this tab.</p>`
           );
 
           clearTimeout(timeout);
@@ -142,7 +181,7 @@ export async function startOAuthFlow(
           resolve(email);
         } catch (err) {
           res.writeHead(500, { "Content-Type": "text/html" });
-          res.end(`<h1>Error</h1><pre>${err}</pre>`);
+          res.end(`<h1>Error</h1><pre>${escapeHtml(String(err))}</pre>`);
           clearTimeout(timeout);
           server.close();
           reject(err instanceof Error ? err : new Error(String(err)));
