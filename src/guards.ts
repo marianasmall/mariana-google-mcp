@@ -102,6 +102,15 @@ export function assertSafeAddLabels(ids: string[]): void {
   }
 }
 
+// Filters may only add the user's own labels (IDs like "Label_39"). System labels
+// (TRASH, SPAM, INBOX, UNREAD, CATEGORY_*, ...) are refused so a filter can never
+// trash, spam, archive or hide mail. Star/important come from fixed booleans.
+export function assertUserLabelId(id: string): void {
+  if (!/^Label_[A-Za-z0-9_]+$/.test(id)) {
+    throw new GuardError(`Filters can only apply your own labels (IDs like "Label_39"), not "${id}". Use gmail_list_labels to find the label ID, or gmail_create_label to make one.`);
+  }
+}
+
 export function assertAttendeesAllowed(attendees: string[], allowed: string[]): void {
   const ok = new Set(allowed.map((a) => a.toLowerCase()));
   for (const a of attendees) {

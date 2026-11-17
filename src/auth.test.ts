@@ -37,6 +37,7 @@ test("SCOPES is the exact least-privilege list, in order", async () => {
   assert.deepEqual(SCOPES, [
     p + "userinfo.email",
     p + "gmail.modify",
+    p + "gmail.settings.basic",
     p + "calendar.events",
     p + "calendar.calendarlist.readonly",
     p + "calendar.freebusy",

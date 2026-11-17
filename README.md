@@ -1,6 +1,6 @@
 # mariana-google-mcp
 
-A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts, with safety-first defaults. The agent can read and draft, but nothing leaves your account without you. There is no send tool, no filter tool, and the server never sends calendar invites or updates. Mail and events are labeled or flagged, never deleted. The one removal is your own unsent drafts, which go to Trash (recoverable). Every write is logged, including failed and refused attempts.
+A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts, with safety-first defaults. The agent can read and draft, but nothing leaves your account without you. There is no send tool, filters can only make mail more visible (never forward, archive or delete), and the server never sends calendar invites or updates. Mail and events are labeled or flagged, never deleted. The one removal is your own unsent drafts, which go to Trash (recoverable). Every write is logged, including failed and refused attempts.
 
 **Who this is for:** operators who want Claude to help run their Google inbox and calendar, while sending and deleting stay in their own hands.
 
@@ -28,7 +28,7 @@ Then add the server to Claude Code and run `google_auth` (steps 3 and 4 under [S
 
 This server is built for an operator who wants AI to help manage their Google workspace without risk of accidental damage:
 
-- **No sending email.** You can draft, but sending requires manual action in Gmail. There is no send tool and no filter tool (filters can forward mail, so `gmail_create_filter` was removed).
+- **No sending email.** You can draft, but sending requires manual action in Gmail. There is no send tool. `gmail_create_filter` exists but can only star, apply one of your own labels, mark important or keep out of spam; it has no forward, archive, mark-read, trash or delete option, and refuses system labels.
 - **No deleting your mail.** Gmail uses a "To Be Deleted" label (soft-delete). Calendar prepends "DELETE - " to event titles. You review and confirm in the Google UI. The single exception is your own unsent drafts (`gmail_delete_draft`), which move to Trash (recoverable for 30 days). There is no permanent-delete option.
 - **No trashing or spamming through labels.** `gmail_apply_label` refuses the `TRASH` and `SPAM` labels. `gmail_remove_label` with `INBOX` archives a message; that is recoverable (the message stays in All Mail).
 - **No invites.** Calendar writes always use `sendUpdates: "none"` (hardcoded, not a parameter), so Google never emails guests about events this server creates or changes.
@@ -99,12 +99,13 @@ How the sign-in is protected:
 
 ### Scopes
 
-The server requests exactly these six scopes (defined in `src/auth.ts`):
+The server requests exactly these seven scopes (defined in `src/auth.ts`):
 
 | Scope | Why |
 |-------|-----|
 | `userinfo.email` | Learn which Google account signed in |
 | `gmail.modify` | Read mail, create and edit drafts, apply labels. Google's scope is broader than the tools use (on Google's side it also covers sending and trashing), so the limits come from the tools this server exposes, not from the scope |
+| `gmail.settings.basic` | List filters and create safe-action filters. Google's scope also covers other filter actions and basic settings; the tool code only exposes star, own label, important and never-spam |
 | `calendar.events` | Create and edit events on calendars you own |
 | `calendar.calendarlist.readonly` | Check that you own a calendar before writing to it |
 | `calendar.freebusy` | The availability tool |
@@ -112,9 +113,9 @@ The server requests exactly these six scopes (defined in `src/auth.ts`):
 
 ### Re-consent after upgrading
 
-Earlier versions also asked for full Calendar access (`calendar`) and Gmail settings access (`gmail.settings.basic`, which is what allowed filters). Upgrading the code does not shrink a token you already have: it keeps the old, broader grant until you sign in again. Re-run `google_auth` for each account after upgrading so the stored token carries only the six scopes above, then restart Claude Code so the rebuilt server loads. You can also remove the old grant at https://myaccount.google.com/permissions before signing in again.
+Earlier versions asked for full Calendar access (`calendar`). The 2026-11-13 hardening dropped `gmail.settings.basic` along with the old unrestricted filter tool; 2026-11-16 brought the scope back for the safe-actions-only filter tools. A token only carries the scopes it was granted at sign-in, so re-run `google_auth` for each account after upgrading so the stored token carries exactly the seven scopes above, then restart Claude Code so the rebuilt server loads. You can also remove the old grant at https://myaccount.google.com/permissions before signing in again.
 
-## Available Tools (22)
+## Available Tools (24)
 
 ### Authentication & Status
 | Tool | Description |
@@ -122,7 +123,7 @@ Earlier versions also asked for full Calendar access (`calendar`) and Gmail sett
 | `google_auth` | Authenticate a Google account via OAuth browser flow |
 | `google_status` | Check connection health for all configured accounts |
 
-### Gmail (11 tools)
+### Gmail (13 tools)
 | Tool | Description |
 |------|-------------|
 | `gmail_search` | Search messages using Gmail query syntax |
@@ -132,6 +133,8 @@ Earlier versions also asked for full Calendar access (`calendar`) and Gmail sett
 | `gmail_create_label` | Create a new label (supports nesting with `/`) |
 | `gmail_apply_label` | Apply a label to one or more messages (refuses `TRASH` and `SPAM`) |
 | `gmail_remove_label` | Remove a label from one or more messages (removing `INBOX` archives; recoverable) |
+| `gmail_list_filters` | List the account's filters (read-only) |
+| `gmail_create_filter` | Create a filter that only makes mail more visible: star, one of your own labels, important, never spam. No forward, archive, mark-read, trash or delete; system labels refused. New mail only |
 | `gmail_move_to_delete` | Soft-delete: move messages to a "To Be Deleted" label |
 | `gmail_list_drafts` | List current drafts with IDs, subjects, recipients, thread |
 | `gmail_update_draft` | Revise a draft in place, preserving its thread and threading headers |

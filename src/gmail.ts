@@ -6,7 +6,7 @@ import * as path from "path";
 import { getAuthClient } from "./auth.js";
 import { logAction, withWriteLogging } from "./logger.js";
 import * as os from "os";
-import { GuardError, assertSafeAddLabels, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
+import { GuardError, assertSafeAddLabels, assertUserLabelId, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
 import { sanitizeDraftHtml } from "./htmlGuard.js";
 import { loadConfig, getAllowedImageHosts, getAttachmentRoots, getConfigDir, getTokensDir } from "./config.js";
 
@@ -831,6 +831,107 @@ export function registerGmailTools(rawServer: McpServer): void {
           {
             type: "text" as const,
             text: `Removed label from ${removed} message(s).`,
+          },
+        ],
+      };
+    }
+  );
+
+  // --- gmail_list_filters ---
+  server.tool(
+    "gmail_list_filters",
+    "List the Gmail filters on an account (criteria and actions). Read-only.",
+    {
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ account }) => {
+      const { client } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+      const res = await gmail.users.settings.filters.list({ userId: "me" });
+      const filters = (res.data.filter || []).map((f) => ({ id: f.id, criteria: f.criteria, action: f.action }));
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ count: filters.length, filters }, null, 2) }],
+      };
+    }
+  );
+
+  // --- gmail_create_filter (safe actions only) ---
+  // Deliberately narrow: no forward, archive, mark-read, delete, trash, or label
+  // removal. A filter keeps running after the session, so it may only make mail
+  // MORE visible (star, label, important, never spam), never hide or send it.
+  server.tool(
+    "gmail_create_filter",
+    "Create a Gmail filter that makes matching mail MORE visible: star it, apply one of your own labels, mark it important, and/or keep it out of spam. It cannot forward, archive, mark read, trash or delete. Applies to NEW mail only; use gmail_search + gmail_apply_label for existing messages. At least one criterion and one action required.",
+    {
+      from: z.string().optional().describe("Match sender, e.g. 'thersegroup.com' or 'name@example.com'"),
+      to: z.string().optional().describe("Match recipient"),
+      subject: z.string().optional().describe("Match subject (substring)"),
+      query: z.string().optional().describe("Gmail search query for advanced matching"),
+      label_id: z.string().optional().describe("One of your own label IDs (Label_...), from gmail_list_labels"),
+      star: z.boolean().optional().describe("Star matching messages"),
+      mark_important: z.boolean().optional().describe("Mark matching messages important"),
+      never_spam: z.boolean().optional().describe("Never send matching messages to Spam"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ from, to, subject, query, label_id, star, mark_important, never_spam, account }) => {
+      const criteria: Record<string, string> = {};
+      const addLabelIds: string[] = [];
+      const removeLabelIds: string[] = [];
+      try {
+        for (const [k, v] of Object.entries({ from, to, subject, query })) {
+          assertNoCRLF(k, v);
+          if (v && v.trim()) criteria[k] = v.trim();
+        }
+        if (label_id) {
+          assertUserLabelId(label_id);
+          addLabelIds.push(label_id);
+        }
+      } catch (err) {
+        const r = guardErrorResult(err);
+        if (r) return r;
+        throw err;
+      }
+      if (star) addLabelIds.push("STARRED");
+      if (mark_important) addLabelIds.push("IMPORTANT");
+      if (never_spam) removeLabelIds.push("SPAM");
+
+      if (Object.keys(criteria).length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "Error: At least one criterion (from, to, subject, query) is required." }],
+          isError: true,
+        };
+      }
+      if (addLabelIds.length === 0 && removeLabelIds.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "Error: At least one action (label_id, star, mark_important, never_spam) is required." }],
+          isError: true,
+        };
+      }
+
+      const action: Record<string, string[]> = {};
+      if (addLabelIds.length) action.addLabelIds = addLabelIds;
+      if (removeLabelIds.length) action.removeLabelIds = removeLabelIds;
+
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+      const res = await gmail.users.settings.filters.create({
+        userId: "me",
+        requestBody: { criteria, action },
+      });
+
+      const criteriaDesc = Object.entries(criteria).map(([k, v]) => `${k}:${v}`).join(", ");
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_create_filter",
+        account: accountName,
+        summary: `Created filter ${res.data.id}: ${criteriaDesc} -> add [${addLabelIds.join(",")}] remove [${removeLabelIds.join(",")}]`,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ id: res.data.id, criteria: res.data.criteria, action: res.data.action }, null, 2),
           },
         ],
       };
