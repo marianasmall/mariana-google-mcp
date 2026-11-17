@@ -9,7 +9,7 @@ import * as os from "os";
 import { GuardError, assertSafeAddLabels, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
 import { sanitizeDraftHtml } from "./htmlGuard.js";
 import { loadConfig, getAllowedImageHosts, getAttachmentRoots, getConfigDir, getTokensDir, getProtectedSenders } from "./config.js";
-import { buildFilterRequest, DEFAULT_PROTECTED_SENDERS } from "./filters.js";
+import { buildFilterRequest, DEFAULT_PROTECTED_SENDERS, isProtectedSender, addressFromHeader } from "./filters.js";
 
 function guardErrorResult(err: unknown) {
   if (err instanceof GuardError) {
@@ -944,7 +944,7 @@ export function registerGmailTools(rawServer: McpServer): void {
   // --- gmail_trash ---
   server.tool(
     "gmail_trash",
-    "Move messages to Trash (recoverable for 30 days, then Gmail empties it). Use for cleanup the user asked for, e.g. old newsletters. Max 500 per call. There is no permanent delete.",
+    "Move messages to Trash (recoverable for 30 days, then Gmail empties it). Use for cleanup the user asked for, e.g. old newsletters. Max 500 per call. Refuses the whole batch if any message is from a protected sender (security, sign-in, money mail). There is no permanent delete.",
     {
       message_ids: z.array(z.string()).min(1).max(500).describe("Gmail message IDs (from gmail_search)"),
       account: z.string().optional().describe("Account name (default: primary)"),
@@ -952,18 +952,38 @@ export function registerGmailTools(rawServer: McpServer): void {
     async ({ message_ids, account }) => {
       const { client, accountName } = await getAuthClient(account);
       const gmail = google.gmail({ version: "v1", auth: client });
-      let trashed = 0;
+      const config = await loadConfig();
+      const protectedSenders = getProtectedSenders(config, DEFAULT_PROTECTED_SENDERS);
+
+      // Check every sender BEFORE trashing anything.
+      const blocked: string[] = [];
       for (const id of message_ids) {
-        await gmail.users.messages.trash({ userId: "me", id });
-        trashed++;
+        const m = await gmail.users.messages.get({ userId: "me", id, format: "metadata", metadataHeaders: ["From"] });
+        const from = m.data.payload?.headers?.find((h) => h.name?.toLowerCase() === "from")?.value ?? "";
+        if (from && isProtectedSender(addressFromHeader(from), protectedSenders)) blocked.push(id);
       }
-      await logAction({
-        timestamp: new Date().toISOString(),
-        tool: "gmail_trash",
-        account: accountName,
-        summary: `Moved ${trashed} message(s) to Trash`,
-        ids: message_ids,
-      });
+      if (blocked.length) {
+        return {
+          content: [{ type: "text" as const, text: `Refused: ${blocked.length} of ${message_ids.length} message(s) are from protected senders (security, sign-in or money mail). Nothing was trashed. Remove these IDs and retry: ${blocked.join(", ")}` }],
+          isError: true,
+        };
+      }
+
+      let trashed = 0;
+      try {
+        for (const id of message_ids) {
+          await gmail.users.messages.trash({ userId: "me", id });
+          trashed++;
+        }
+      } finally {
+        await logAction({
+          timestamp: new Date().toISOString(),
+          tool: "gmail_trash",
+          account: accountName,
+          summary: `Moved ${trashed} of ${message_ids.length} message(s) to Trash`,
+          ids: message_ids.slice(0, trashed),
+        });
+      }
       return {
         content: [{ type: "text" as const, text: `Moved ${trashed} message(s) to Trash (recoverable for 30 days).` }],
       };

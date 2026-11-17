@@ -50,8 +50,38 @@ test("protected senders cannot be trashed, archived or marked read (subdomains t
   }
   assert.equal(isProtectedSender("news@notgoogle.com", P), false);
   assert.equal(build({ from: "news@notgoogle.com", trash: true }).hides, true);
-  // never_spam / star on a protected sender is allowed (only makes it more visible)
-  assert.ok(build({ from: "google.com", never_spam: true }));
+  // never_spam on a protected sender is refused (spoofing); star is fine
+  refuses({ from: "google.com", never_spam: true }, /protected sender/);
+  assert.ok(build({ from: "google.com", star: true }));
+});
+
+test("partial-token forms of protected domains are refused (Gmail token matching)", () => {
+  for (const from of ["accounts.google", "x@accounts.google", "GOOGLE.COM", "mybank.example", "a@sub.mybank.example"]) {
+    refuses({ from, trash: true }, /protected sender|one email address/);
+  }
+  assert.equal(isProtectedSender("accounts.google", P), true);
+  assert.equal(isProtectedSender("google.co", P), true); // brand label: cautious on purpose
+  assert.equal(isProtectedSender("googlenews-deals.example", P), false);
+});
+
+test("punctuation-only local parts, stop-short brands and operator subjects are refused", () => {
+  refuses({ from: "_@gmail.com", trash: true }, /one email address/);
+  refuses({ from: ".x@shop.example", trash: true }, /one email address/);
+  for (const from of ["service.paypal", "a@service.paypal", "mail.github.io", "apple.example"]) {
+    refuses({ from, trash: true }, /protected sender/);
+  }
+  for (const subject of ["(sale OR deal)", "sale OR deal", "-keep", '"x"', "{a b}"]) {
+    refuses({ from: "shop.example", subject, trash: true }, /plain words/);
+  }
+  assert.ok(build({ from: "shop.example", subject: "Weekly deals: 20% off!", trash: true }));
+  // visibility filters keep full query power
+  assert.ok(build({ subject: "(a OR b)", star: true }));
+});
+
+test("addressFromHeader extracts the address", async () => {
+  const { addressFromHeader } = await import("./filters.js");
+  assert.equal(addressFromHeader('"Google" <no-reply@accounts.google.com>'), "no-reply@accounts.google.com");
+  assert.equal(addressFromHeader("deals@shop.example"), "deals@shop.example");
 });
 
 test("shared mail domains and bare public suffixes need a full address", () => {
