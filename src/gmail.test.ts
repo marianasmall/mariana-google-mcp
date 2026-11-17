@@ -183,10 +183,17 @@ test("readAttachmentGuarded refusals share one message", async () => {
   assert.equal(new Set(msgs).size, 1);
 });
 
-test("filter tool is not registered", () => {
-  const names = setup().tools.map((t) => t.name);
-  assert.ok(!names.includes("gmail_create_filter"));
-  assert.ok(!names.some((n) => /filter/i.test(n)));
+test("filter tools are exactly list/create/delete, and nothing forwards", () => {
+  const names = setup().tools.map((t) => t.name).filter((n) => /filter|forward/i.test(n)).sort();
+  assert.deepEqual(names, ["gmail_create_filter", "gmail_delete_filter", "gmail_list_filters"]);
+});
+
+test("gmail_trash caps batch size and has no permanent option", () => {
+  const t = setup().get("gmail_trash");
+  assert.ok(!("permanent" in t.schema));
+  assert.equal(t.schema.message_ids.safeParse(new Array(501).fill("m")).success, false);
+  assert.equal(t.schema.message_ids.safeParse([]).success, false);
+  assert.match(t.desc, /recoverable/i);
 });
 
 test("gmail_delete_draft has no permanent option and does not mention permanent deletion", () => {
@@ -202,6 +209,56 @@ test("gmail_apply_label refuses TRASH and SPAM before any Google call", async ()
     assert.equal(res.isError, true, label_id);
     assert.match(res.content[0].text, new RegExp(label_id.toUpperCase()));
   }
+});
+
+test("gmail_create_filter exposes a fixed action vocabulary with no forward or raw label lists", () => {
+  const t = setup().get("gmail_create_filter");
+  const keys = Object.keys(t.schema).sort();
+  assert.deepEqual(keys, ["account", "archive", "from", "label_id", "mark_important", "mark_read", "never_spam", "query", "star", "subject", "to", "trash"]);
+  for (const bad of ["forward", "remove_label_ids", "add_label_ids", "delete", "permanent"]) {
+    assert.ok(!(bad in t.schema), bad);
+  }
+});
+
+test("gmail_create_filter refuses trash with a broad query before any Google call", async () => {
+  const t = setup().get("gmail_create_filter");
+  const res = await t.handler({ query: "*", trash: true });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /single sender/);
+});
+
+test("gmail_create_filter refuses system labels before any Google call", async () => {
+  const t = setup().get("gmail_create_filter");
+  for (const label_id of ["TRASH", "SPAM", "INBOX", "UNREAD", "STARRED", "CATEGORY_PROMOTIONS", "Label_1;x", "label_39", ""]) {
+    const res = await t.handler({ from: "a@example.com", label_id: label_id || " " });
+    assert.equal(res.isError, true, label_id);
+    assert.match(res.content[0].text, /own labels/);
+  }
+});
+
+test("gmail_create_filter requires a criterion and an action, and rejects CR/LF", async () => {
+  const t = setup().get("gmail_create_filter");
+  let res = await t.handler({ star: true });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /criterion/);
+  res = await t.handler({ from: "   ", star: true });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /criterion/);
+  res = await t.handler({ from: "a@example.com" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /action/);
+  for (const field of ["from", "to", "subject", "query"]) {
+    const args: any = { star: true };
+    args[field] = "x\r\nevil";
+    res = await t.handler(args);
+    assert.equal(res.isError, true, field);
+    assert.match(res.content[0].text, /line breaks/);
+  }
+});
+
+test("gmail_list_filters is registered and read-only by description", () => {
+  const t = setup().get("gmail_list_filters");
+  assert.match(t.desc, /read-only/i);
 });
 
 test("gmail_update_draft rejects CR/LF in to/cc/bcc before any network call", async () => {

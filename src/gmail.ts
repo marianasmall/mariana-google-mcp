@@ -8,7 +8,8 @@ import { logAction, withWriteLogging } from "./logger.js";
 import * as os from "os";
 import { GuardError, assertSafeAddLabels, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
 import { sanitizeDraftHtml } from "./htmlGuard.js";
-import { loadConfig, getAllowedImageHosts, getAttachmentRoots, getConfigDir, getTokensDir } from "./config.js";
+import { loadConfig, getAllowedImageHosts, getAttachmentRoots, getConfigDir, getTokensDir, getProtectedSenders } from "./config.js";
+import { buildFilterRequest, DEFAULT_PROTECTED_SENDERS, isProtectedSender, addressFromHeader } from "./filters.js";
 
 function guardErrorResult(err: unknown) {
   if (err instanceof GuardError) {
@@ -833,6 +834,158 @@ export function registerGmailTools(rawServer: McpServer): void {
             text: `Removed label from ${removed} message(s).`,
           },
         ],
+      };
+    }
+  );
+
+  // --- gmail_list_filters ---
+  server.tool(
+    "gmail_list_filters",
+    "List the Gmail filters on an account (criteria and actions). Read-only.",
+    {
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ account }) => {
+      const { client } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+      const res = await gmail.users.settings.filters.list({ userId: "me" });
+      const filters = (res.data.filter || []).map((f) => ({ id: f.id, criteria: f.criteria, action: f.action }));
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ count: filters.length, filters }, null, 2) }],
+      };
+    }
+  );
+
+  // --- gmail_create_filter ---
+  // A filter keeps running after the session. Visibility actions (star, label,
+  // important) take any criteria. Hiding actions (trash, archive, mark read) and
+  // never_spam need ONE named sender and refuse protected senders; see
+  // buildFilterRequest in ./filters.ts. There is no forward option.
+  server.tool(
+    "gmail_create_filter",
+    "Create a Gmail filter for NEW mail. Visibility actions (star, one of your own labels, important) accept any criteria. Cleanup actions (trash, archive, mark_read) and never_spam require a single sender in `from` (address or domain), optionally narrowed by `subject`, and refuse protected senders (security, sign-in and money mail). Trash is recoverable for 30 days. No forwarding. For existing messages use gmail_search + gmail_trash / gmail_apply_label.",
+    {
+      from: z.string().optional().describe("Match sender: 'name@example.com' or a domain like 'news.example.com'"),
+      to: z.string().optional().describe("Match recipient (visibility actions only)"),
+      subject: z.string().optional().describe("Match subject (substring)"),
+      query: z.string().optional().describe("Gmail search query (visibility actions only)"),
+      label_id: z.string().optional().describe("One of your own label IDs (Label_...), from gmail_list_labels"),
+      star: z.boolean().optional().describe("Star matching messages"),
+      mark_important: z.boolean().optional().describe("Mark matching messages important"),
+      never_spam: z.boolean().optional().describe("Never send matching messages to Spam (single sender only)"),
+      archive: z.boolean().optional().describe("Skip the inbox (single sender only)"),
+      mark_read: z.boolean().optional().describe("Mark as read (single sender only)"),
+      trash: z.boolean().optional().describe("Send to Trash, recoverable 30 days (single sender only)"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ account, ...args }) => {
+      let req;
+      try {
+        const config = await loadConfig();
+        req = buildFilterRequest(args, getProtectedSenders(config, DEFAULT_PROTECTED_SENDERS));
+      } catch (err) {
+        const r = guardErrorResult(err);
+        if (r) return r;
+        throw err;
+      }
+      const { criteria, action } = req;
+
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+      const res = await gmail.users.settings.filters.create({
+        userId: "me",
+        requestBody: { criteria, action },
+      });
+
+      const criteriaDesc = Object.entries(criteria).map(([k, v]) => `${k}:${v}`).join(", ");
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_create_filter",
+        account: accountName,
+        summary: `Created filter ${res.data.id}: ${criteriaDesc} -> add [${(action.addLabelIds ?? []).join(",")}] remove [${(action.removeLabelIds ?? []).join(",")}]`,
+      });
+
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ id: res.data.id, criteria: res.data.criteria, action: res.data.action }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // --- gmail_delete_filter ---
+  server.tool(
+    "gmail_delete_filter",
+    "Delete one Gmail filter by ID (from gmail_list_filters). Only stops the rule; no mail is touched.",
+    {
+      filter_id: z.string().describe("Filter ID from gmail_list_filters"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ filter_id, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+      const existing = await gmail.users.settings.filters.get({ userId: "me", id: filter_id });
+      await gmail.users.settings.filters.delete({ userId: "me", id: filter_id });
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_delete_filter",
+        account: accountName,
+        summary: `Deleted filter ${filter_id}: ${JSON.stringify({ criteria: existing.data.criteria, action: existing.data.action })}`,
+      });
+      return {
+        content: [{ type: "text" as const, text: `Deleted filter ${filter_id}. Its rule was: ${JSON.stringify({ criteria: existing.data.criteria, action: existing.data.action })}` }],
+      };
+    }
+  );
+
+  // --- gmail_trash ---
+  server.tool(
+    "gmail_trash",
+    "Move messages to Trash (recoverable for 30 days, then Gmail empties it). Use for cleanup the user asked for, e.g. old newsletters. Max 500 per call. Refuses the whole batch if any message is from a protected sender (security, sign-in, money mail). There is no permanent delete.",
+    {
+      message_ids: z.array(z.string()).min(1).max(500).describe("Gmail message IDs (from gmail_search)"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ message_ids, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+      const config = await loadConfig();
+      const protectedSenders = getProtectedSenders(config, DEFAULT_PROTECTED_SENDERS);
+
+      // Check every sender BEFORE trashing anything.
+      const blocked: string[] = [];
+      for (const id of message_ids) {
+        const m = await gmail.users.messages.get({ userId: "me", id, format: "metadata", metadataHeaders: ["From"] });
+        const from = m.data.payload?.headers?.find((h) => h.name?.toLowerCase() === "from")?.value ?? "";
+        if (from && isProtectedSender(addressFromHeader(from), protectedSenders)) blocked.push(id);
+      }
+      if (blocked.length) {
+        return {
+          content: [{ type: "text" as const, text: `Refused: ${blocked.length} of ${message_ids.length} message(s) are from protected senders (security, sign-in or money mail). Nothing was trashed. Remove these IDs and retry: ${blocked.join(", ")}` }],
+          isError: true,
+        };
+      }
+
+      let trashed = 0;
+      try {
+        for (const id of message_ids) {
+          await gmail.users.messages.trash({ userId: "me", id });
+          trashed++;
+        }
+      } finally {
+        await logAction({
+          timestamp: new Date().toISOString(),
+          tool: "gmail_trash",
+          account: accountName,
+          summary: `Moved ${trashed} of ${message_ids.length} message(s) to Trash`,
+          ids: message_ids.slice(0, trashed),
+        });
+      }
+      return {
+        content: [{ type: "text" as const, text: `Moved ${trashed} message(s) to Trash (recoverable for 30 days).` }],
       };
     }
   );

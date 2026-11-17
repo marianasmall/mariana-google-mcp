@@ -19,6 +19,7 @@ export interface AppConfig {
   attachmentRoots?: string[];
   allowedAttendees?: string[];
   allowedImageHosts?: string[];
+  protectedSenders?: string[];
 }
 
 const DEFAULT_ATTACHMENT_SUBDIRS = ["Projects", "Documents", "Downloads", "Desktop", "Library/CloudStorage"];
@@ -30,6 +31,11 @@ export function getAllowedAttendees(config: AppConfig): string[] {
 }
 export function getAllowedImageHosts(config: AppConfig): string[] {
   return (config.allowedImageHosts ?? []).filter((h): h is string => typeof h === "string");
+}
+
+export function getProtectedSenders(config: AppConfig, defaults: string[]): string[] {
+  const extra = (config.protectedSenders ?? []).filter((h): h is string => typeof h === "string");
+  return [...defaults, ...extra];
 }
 
 export function getConfigDir(): string { return CONFIG_DIR; }

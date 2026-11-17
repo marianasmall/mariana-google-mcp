@@ -1,6 +1,6 @@
 # mariana-google-mcp
 
-A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts, with safety-first defaults. The agent can read and draft, but nothing leaves your account without you. There is no send tool, no filter tool, and the server never sends calendar invites or updates. Mail and events are labeled or flagged, never deleted. The one removal is your own unsent drafts, which go to Trash (recoverable). Every write is logged, including failed and refused attempts.
+A custom MCP (Model Context Protocol) server that gives Claude Code access to Gmail, Google Calendar, and Google Contacts, with safety-first defaults. The agent can read and draft, but nothing leaves your account without you. There is no send tool and no forwarding, and the server never sends calendar invites or updates. Nothing is permanently deleted: cleanup moves mail to Trash (recoverable for 30 days), and filters that hide mail must name a single sender and can never touch protected senders (security, sign-in and money mail). Every write is logged, including failed and refused attempts.
 
 **Who this is for:** operators who want Claude to help run their Google inbox and calendar, while sending and deleting stay in their own hands.
 
@@ -28,9 +28,10 @@ Then add the server to Claude Code and run `google_auth` (steps 3 and 4 under [S
 
 This server is built for an operator who wants AI to help manage their Google workspace without risk of accidental damage:
 
-- **No sending email.** You can draft, but sending requires manual action in Gmail. There is no send tool and no filter tool (filters can forward mail, so `gmail_create_filter` was removed).
+- **No sending email.** You can draft, but sending requires manual action in Gmail. There is no send tool and no forward option anywhere, including filters.
+- **Filters are bounded.** `gmail_create_filter` takes a fixed action list. Visibility actions (star, one of your own `Label_*` labels, important) accept any criteria. Cleanup actions (trash, archive, mark read) and never-spam require ONE sender (an address or a domain), optionally narrowed by subject, with no `to` or `query`, so a filter cannot sweep broad mail out of sight. Shared domains (gmail.com, outlook.com, co.uk-style suffixes) need a full address, and those subjects must be plain words. All four refuse protected senders, matched the way Gmail tokenizes (so `accounts.google` or `service.paypal` count too) (Google, Apple, Microsoft, GitHub, PayPal, 1Password, Anthropic, plus your own `protectedSenders`). The exact request sent to Google is unit-tested.
 - **No deleting your mail.** Gmail uses a "To Be Deleted" label (soft-delete). Calendar prepends "DELETE - " to event titles. You review and confirm in the Google UI. The single exception is your own unsent drafts (`gmail_delete_draft`), which move to Trash (recoverable for 30 days). There is no permanent-delete option.
-- **No trashing or spamming through labels.** `gmail_apply_label` refuses the `TRASH` and `SPAM` labels. `gmail_remove_label` with `INBOX` archives a message; that is recoverable (the message stays in All Mail).
+- **Trash only through `gmail_trash`.** It moves up to 500 messages per call to Trash (recoverable for 30 days; there is no permanent delete), and refuses the whole batch if any message is from a protected sender. `gmail_apply_label` refuses the `TRASH` and `SPAM` labels. `gmail_remove_label` with `INBOX` archives a message; that is recoverable (the message stays in All Mail).
 - **No invites.** Calendar writes always use `sendUpdates: "none"` (hardcoded, not a parameter), so Google never emails guests about events this server creates or changes.
 - **Every write is logged.** An append-only JSONL action log records every write with timestamps, tool name, account, and summary. Failed and refused attempts are logged too.
 - **Multi-account support.** Manage personal and work accounts with named aliases.
@@ -99,12 +100,13 @@ How the sign-in is protected:
 
 ### Scopes
 
-The server requests exactly these six scopes (defined in `src/auth.ts`):
+The server requests exactly these seven scopes (defined in `src/auth.ts`):
 
 | Scope | Why |
 |-------|-----|
 | `userinfo.email` | Learn which Google account signed in |
 | `gmail.modify` | Read mail, create and edit drafts, apply labels. Google's scope is broader than the tools use (on Google's side it also covers sending and trashing), so the limits come from the tools this server exposes, not from the scope |
+| `gmail.settings.basic` | List, create and delete filters. Google's scope also covers other basic settings; the tools only touch filters, with the limits above (no forwarding) |
 | `calendar.events` | Create and edit events on calendars you own |
 | `calendar.calendarlist.readonly` | Check that you own a calendar before writing to it |
 | `calendar.freebusy` | The availability tool |
@@ -112,9 +114,9 @@ The server requests exactly these six scopes (defined in `src/auth.ts`):
 
 ### Re-consent after upgrading
 
-Earlier versions also asked for full Calendar access (`calendar`) and Gmail settings access (`gmail.settings.basic`, which is what allowed filters). Upgrading the code does not shrink a token you already have: it keeps the old, broader grant until you sign in again. Re-run `google_auth` for each account after upgrading so the stored token carries only the six scopes above, then restart Claude Code so the rebuilt server loads. You can also remove the old grant at https://myaccount.google.com/permissions before signing in again.
+Earlier versions asked for full Calendar access (`calendar`). The 2026-11-13 hardening dropped `gmail.settings.basic` along with the old unrestricted filter tool; 2026-11-16 brought the scope back for the safe-actions-only filter tools. A token only carries the scopes it was granted at sign-in, so re-run `google_auth` for each account after upgrading so the stored token carries exactly the seven scopes above, then restart Claude Code so the rebuilt server loads. You can also remove the old grant at https://myaccount.google.com/permissions before signing in again.
 
-## Available Tools (22)
+## Available Tools (26)
 
 ### Authentication & Status
 | Tool | Description |
@@ -122,7 +124,7 @@ Earlier versions also asked for full Calendar access (`calendar`) and Gmail sett
 | `google_auth` | Authenticate a Google account via OAuth browser flow |
 | `google_status` | Check connection health for all configured accounts |
 
-### Gmail (11 tools)
+### Gmail (15 tools)
 | Tool | Description |
 |------|-------------|
 | `gmail_search` | Search messages using Gmail query syntax |
@@ -132,6 +134,10 @@ Earlier versions also asked for full Calendar access (`calendar`) and Gmail sett
 | `gmail_create_label` | Create a new label (supports nesting with `/`) |
 | `gmail_apply_label` | Apply a label to one or more messages (refuses `TRASH` and `SPAM`) |
 | `gmail_remove_label` | Remove a label from one or more messages (removing `INBOX` archives; recoverable) |
+| `gmail_list_filters` | List the account's filters (read-only) |
+| `gmail_create_filter` | Create a filter for new mail: star, own label, important (any criteria); trash, archive, mark read, never spam (one sender only; protected senders refused). No forwarding |
+| `gmail_delete_filter` | Delete a filter by ID; logs the rule it removed. Touches no mail |
+| `gmail_trash` | Move up to 500 messages to Trash (recoverable 30 days; no permanent delete) |
 | `gmail_move_to_delete` | Soft-delete: move messages to a "To Be Deleted" label |
 | `gmail_list_drafts` | List current drafts with IDs, subjects, recipients, thread |
 | `gmail_update_draft` | Revise a draft in place, preserving its thread and threading headers |
@@ -172,7 +178,7 @@ All configuration is stored in `~/.config/mariana-google-mcp/`:
 
 | File | Purpose |
 |------|---------|
-| `config.json` | Account registry (names, email hashes, defaults) plus the optional `attachmentRoots`, `allowedAttendees` and `allowedImageHosts` settings below |
+| `config.json` | Account registry (names, email hashes, defaults) plus the optional `attachmentRoots`, `allowedAttendees`, `allowedImageHosts` and `protectedSenders` settings below |
 | `tokens/<hash>.json` | OAuth tokens per account (auto-refreshed) |
 | `action-log.jsonl` | Append-only log of all mutations |
 
@@ -182,13 +188,14 @@ Tokens are stored under a hash of the email address, not the plaintext address, 
 
 ### Settings you can add to `config.json`
 
-All three are optional. Edit `config.json` yourself. No tool changes these settings, and the attachment guard refuses to read the config directory.
+All four are optional. Edit `config.json` yourself. No tool changes these settings, and the attachment guard refuses to read the config directory.
 
 ```json
 {
   "attachmentRoots": ["/absolute/path/to/outbox", "/absolute/path/to/proposals"],
   "allowedAttendees": ["partner@example.com", "assistant@example.com"],
-  "allowedImageHosts": ["images.example.com"]
+  "allowedImageHosts": ["images.example.com"],
+  "protectedSenders": ["mybank.example", "alerts.mycard.example"]
 }
 ```
 
@@ -205,6 +212,8 @@ The path is resolved to its real location first, so symlinks and `..` cannot be 
 **`allowedAttendees`** is a list of addresses that may be added as calendar guests even though they are not in your Google Contacts. See [Calendar guests](#calendar-guests). Default: empty.
 
 **`allowedImageHosts`** is a list of hostnames whose images may appear in an HTML draft (`<img src>` only; CSS can never load anything). By default an HTML draft with a remote image is refused (see [Remote resources in HTML drafts](#remote-resources-in-html-drafts)). An entry lets an image through only if its URL is `https:`, its hostname equals the entry exactly (case does not matter), and it has no username, password, explicit port or trailing dot. There are no subdomain wildcards, so `example.com` does not allow `images.example.com`, and `http:` is never allowed. Use it for something like an email-signature logo hosted on your own domain. Only list hosts **you control**: whoever runs a listed host sees a request every time a draft is opened. Default: empty.
+
+**`protectedSenders`** adds domains (subdomains included) whose mail a filter may never trash, archive or mark read, on top of the built-in list (Google, Apple, iCloud, Microsoft, GitHub, PayPal, 1Password, Anthropic). Put your banks, card issuers and anything that sends sign-in codes here; it stays on your machine rather than in a public repo. Default: empty.
 
 ### Other input checks
 
