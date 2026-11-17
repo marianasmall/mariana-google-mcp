@@ -183,9 +183,17 @@ test("readAttachmentGuarded refusals share one message", async () => {
   assert.equal(new Set(msgs).size, 1);
 });
 
-test("only the safe filter tools are registered (no update/delete/forwarding filter tools)", () => {
+test("filter tools are exactly list/create/delete, and nothing forwards", () => {
   const names = setup().tools.map((t) => t.name).filter((n) => /filter|forward/i.test(n)).sort();
-  assert.deepEqual(names, ["gmail_create_filter", "gmail_list_filters"]);
+  assert.deepEqual(names, ["gmail_create_filter", "gmail_delete_filter", "gmail_list_filters"]);
+});
+
+test("gmail_trash caps batch size and has no permanent option", () => {
+  const t = setup().get("gmail_trash");
+  assert.ok(!("permanent" in t.schema));
+  assert.equal(t.schema.message_ids.safeParse(new Array(501).fill("m")).success, false);
+  assert.equal(t.schema.message_ids.safeParse([]).success, false);
+  assert.match(t.desc, /recoverable/i);
 });
 
 test("gmail_delete_draft has no permanent option and does not mention permanent deletion", () => {
@@ -203,13 +211,20 @@ test("gmail_apply_label refuses TRASH and SPAM before any Google call", async ()
   }
 });
 
-test("gmail_create_filter exposes only safe actions (no forward/archive/read/remove)", () => {
+test("gmail_create_filter exposes a fixed action vocabulary with no forward or raw label lists", () => {
   const t = setup().get("gmail_create_filter");
   const keys = Object.keys(t.schema).sort();
-  assert.deepEqual(keys, ["account", "from", "label_id", "mark_important", "never_spam", "query", "star", "subject", "to"]);
-  for (const bad of ["forward", "remove_label_ids", "add_label_ids", "mark_read", "archive", "delete", "trash"]) {
+  assert.deepEqual(keys, ["account", "archive", "from", "label_id", "mark_important", "mark_read", "never_spam", "query", "star", "subject", "to", "trash"]);
+  for (const bad of ["forward", "remove_label_ids", "add_label_ids", "delete", "permanent"]) {
     assert.ok(!(bad in t.schema), bad);
   }
+});
+
+test("gmail_create_filter refuses trash with a broad query before any Google call", async () => {
+  const t = setup().get("gmail_create_filter");
+  const res = await t.handler({ query: "*", trash: true });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /single sender/);
 });
 
 test("gmail_create_filter refuses system labels before any Google call", async () => {

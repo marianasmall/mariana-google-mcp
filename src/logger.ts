@@ -85,6 +85,7 @@ export function withFailureLog<A extends { account?: string }, R>(
 export const WRITE_TOOLS = new Set([
   "gmail_draft", "gmail_update_draft", "gmail_delete_draft",
   "gmail_create_label", "gmail_apply_label", "gmail_remove_label", "gmail_move_to_delete",
+  "gmail_trash", "gmail_create_filter", "gmail_delete_filter",
   "calendar_create", "calendar_update", "calendar_flag_delete",
 ]);
 

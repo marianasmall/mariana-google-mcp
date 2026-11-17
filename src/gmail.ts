@@ -6,9 +6,10 @@ import * as path from "path";
 import { getAuthClient } from "./auth.js";
 import { logAction, withWriteLogging } from "./logger.js";
 import * as os from "os";
-import { GuardError, assertSafeAddLabels, assertUserLabelId, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
+import { GuardError, assertSafeAddLabels, assertNoCRLF, resolveAttachmentPath, attachmentDeniedMessage } from "./guards.js";
 import { sanitizeDraftHtml } from "./htmlGuard.js";
-import { loadConfig, getAllowedImageHosts, getAttachmentRoots, getConfigDir, getTokensDir } from "./config.js";
+import { loadConfig, getAllowedImageHosts, getAttachmentRoots, getConfigDir, getTokensDir, getProtectedSenders } from "./config.js";
+import { buildFilterRequest, DEFAULT_PROTECTED_SENDERS } from "./filters.js";
 
 function guardErrorResult(err: unknown) {
   if (err instanceof GuardError) {
@@ -855,62 +856,39 @@ export function registerGmailTools(rawServer: McpServer): void {
     }
   );
 
-  // --- gmail_create_filter (safe actions only) ---
-  // Deliberately narrow: no forward, archive, mark-read, delete, trash, or label
-  // removal. A filter keeps running after the session, so it may only make mail
-  // MORE visible (star, label, important, never spam), never hide or send it.
+  // --- gmail_create_filter ---
+  // A filter keeps running after the session. Visibility actions (star, label,
+  // important) take any criteria. Hiding actions (trash, archive, mark read) and
+  // never_spam need ONE named sender and refuse protected senders; see
+  // buildFilterRequest in ./filters.ts. There is no forward option.
   server.tool(
     "gmail_create_filter",
-    "Create a Gmail filter that makes matching mail MORE visible: star it, apply one of your own labels, mark it important, and/or keep it out of spam. It cannot forward, archive, mark read, trash or delete. Applies to NEW mail only; use gmail_search + gmail_apply_label for existing messages. At least one criterion and one action required.",
+    "Create a Gmail filter for NEW mail. Visibility actions (star, one of your own labels, important) accept any criteria. Cleanup actions (trash, archive, mark_read) and never_spam require a single sender in `from` (address or domain), optionally narrowed by `subject`, and refuse protected senders (security, sign-in and money mail). Trash is recoverable for 30 days. No forwarding. For existing messages use gmail_search + gmail_trash / gmail_apply_label.",
     {
-      from: z.string().optional().describe("Match sender, e.g. 'thersegroup.com' or 'name@example.com'"),
-      to: z.string().optional().describe("Match recipient"),
+      from: z.string().optional().describe("Match sender: 'name@example.com' or a domain like 'news.example.com'"),
+      to: z.string().optional().describe("Match recipient (visibility actions only)"),
       subject: z.string().optional().describe("Match subject (substring)"),
-      query: z.string().optional().describe("Gmail search query for advanced matching"),
+      query: z.string().optional().describe("Gmail search query (visibility actions only)"),
       label_id: z.string().optional().describe("One of your own label IDs (Label_...), from gmail_list_labels"),
       star: z.boolean().optional().describe("Star matching messages"),
       mark_important: z.boolean().optional().describe("Mark matching messages important"),
-      never_spam: z.boolean().optional().describe("Never send matching messages to Spam"),
+      never_spam: z.boolean().optional().describe("Never send matching messages to Spam (single sender only)"),
+      archive: z.boolean().optional().describe("Skip the inbox (single sender only)"),
+      mark_read: z.boolean().optional().describe("Mark as read (single sender only)"),
+      trash: z.boolean().optional().describe("Send to Trash, recoverable 30 days (single sender only)"),
       account: z.string().optional().describe("Account name (default: primary)"),
     },
-    async ({ from, to, subject, query, label_id, star, mark_important, never_spam, account }) => {
-      const criteria: Record<string, string> = {};
-      const addLabelIds: string[] = [];
-      const removeLabelIds: string[] = [];
+    async ({ account, ...args }) => {
+      let req;
       try {
-        for (const [k, v] of Object.entries({ from, to, subject, query })) {
-          assertNoCRLF(k, v);
-          if (v && v.trim()) criteria[k] = v.trim();
-        }
-        if (label_id) {
-          assertUserLabelId(label_id);
-          addLabelIds.push(label_id);
-        }
+        const config = await loadConfig();
+        req = buildFilterRequest(args, getProtectedSenders(config, DEFAULT_PROTECTED_SENDERS));
       } catch (err) {
         const r = guardErrorResult(err);
         if (r) return r;
         throw err;
       }
-      if (star) addLabelIds.push("STARRED");
-      if (mark_important) addLabelIds.push("IMPORTANT");
-      if (never_spam) removeLabelIds.push("SPAM");
-
-      if (Object.keys(criteria).length === 0) {
-        return {
-          content: [{ type: "text" as const, text: "Error: At least one criterion (from, to, subject, query) is required." }],
-          isError: true,
-        };
-      }
-      if (addLabelIds.length === 0 && removeLabelIds.length === 0) {
-        return {
-          content: [{ type: "text" as const, text: "Error: At least one action (label_id, star, mark_important, never_spam) is required." }],
-          isError: true,
-        };
-      }
-
-      const action: Record<string, string[]> = {};
-      if (addLabelIds.length) action.addLabelIds = addLabelIds;
-      if (removeLabelIds.length) action.removeLabelIds = removeLabelIds;
+      const { criteria, action } = req;
 
       const { client, accountName } = await getAuthClient(account);
       const gmail = google.gmail({ version: "v1", auth: client });
@@ -924,7 +902,7 @@ export function registerGmailTools(rawServer: McpServer): void {
         timestamp: new Date().toISOString(),
         tool: "gmail_create_filter",
         account: accountName,
-        summary: `Created filter ${res.data.id}: ${criteriaDesc} -> add [${addLabelIds.join(",")}] remove [${removeLabelIds.join(",")}]`,
+        summary: `Created filter ${res.data.id}: ${criteriaDesc} -> add [${(action.addLabelIds ?? []).join(",")}] remove [${(action.removeLabelIds ?? []).join(",")}]`,
       });
 
       return {
@@ -934,6 +912,60 @@ export function registerGmailTools(rawServer: McpServer): void {
             text: JSON.stringify({ id: res.data.id, criteria: res.data.criteria, action: res.data.action }, null, 2),
           },
         ],
+      };
+    }
+  );
+
+  // --- gmail_delete_filter ---
+  server.tool(
+    "gmail_delete_filter",
+    "Delete one Gmail filter by ID (from gmail_list_filters). Only stops the rule; no mail is touched.",
+    {
+      filter_id: z.string().describe("Filter ID from gmail_list_filters"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ filter_id, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+      const existing = await gmail.users.settings.filters.get({ userId: "me", id: filter_id });
+      await gmail.users.settings.filters.delete({ userId: "me", id: filter_id });
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_delete_filter",
+        account: accountName,
+        summary: `Deleted filter ${filter_id}: ${JSON.stringify({ criteria: existing.data.criteria, action: existing.data.action })}`,
+      });
+      return {
+        content: [{ type: "text" as const, text: `Deleted filter ${filter_id}. Its rule was: ${JSON.stringify({ criteria: existing.data.criteria, action: existing.data.action })}` }],
+      };
+    }
+  );
+
+  // --- gmail_trash ---
+  server.tool(
+    "gmail_trash",
+    "Move messages to Trash (recoverable for 30 days, then Gmail empties it). Use for cleanup the user asked for, e.g. old newsletters. Max 500 per call. There is no permanent delete.",
+    {
+      message_ids: z.array(z.string()).min(1).max(500).describe("Gmail message IDs (from gmail_search)"),
+      account: z.string().optional().describe("Account name (default: primary)"),
+    },
+    async ({ message_ids, account }) => {
+      const { client, accountName } = await getAuthClient(account);
+      const gmail = google.gmail({ version: "v1", auth: client });
+      let trashed = 0;
+      for (const id of message_ids) {
+        await gmail.users.messages.trash({ userId: "me", id });
+        trashed++;
+      }
+      await logAction({
+        timestamp: new Date().toISOString(),
+        tool: "gmail_trash",
+        account: accountName,
+        summary: `Moved ${trashed} message(s) to Trash`,
+        ids: message_ids,
+      });
+      return {
+        content: [{ type: "text" as const, text: `Moved ${trashed} message(s) to Trash (recoverable for 30 days).` }],
       };
     }
   );
