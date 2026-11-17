@@ -37,7 +37,24 @@ export const DEFAULT_PROTECTED_SENDERS = [
   "anthropic.com",
 ];
 
-const SENDER_RE = /^(?:[A-Za-z0-9._%+-]+@)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$/;
+// Domains shared by huge numbers of unrelated people. A cleanup filter on one
+// of these must name a full address, never the whole domain.
+export const SHARED_MAIL_DOMAINS = [
+  "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+  "yahoo.com", "ymail.com", "aol.com", "icloud.com", "me.com", "mac.com",
+  "proton.me", "protonmail.com", "gmx.com", "zoho.com", "fastmail.com",
+];
+// Second-level labels used under country codes (co.uk, com.au, ...).
+const GENERIC_SLD = new Set(["com", "co", "org", "net", "gov", "edu", "ac", "or", "ne", "go"]);
+
+function isTooBroadDomain(domain: string): boolean {
+  const d = domain.toLowerCase();
+  if (SHARED_MAIL_DOMAINS.includes(d)) return true;
+  const parts = d.split(".");
+  return parts.length === 2 && GENERIC_SLD.has(parts[0]);
+}
+
+const SENDER_RE =/^(?:[A-Za-z0-9._%+-]+@)?(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}$/;
 
 function senderDomain(from: string): string {
   return from.toLowerCase().split("@").pop()!;
@@ -91,6 +108,9 @@ export function buildFilterRequest(args: FilterArgs, protectedSenders: string[])
     }
     if (!SENDER_RE.test(criteria.from)) {
       throw new GuardError(`\`from\` must be one email address or domain (no spaces, wildcards, OR, or search operators), not "${criteria.from}".`);
+    }
+    if (!criteria.from.includes("@") && isTooBroadDomain(criteria.from)) {
+      throw new GuardError(`${criteria.from} is shared by too many unrelated senders. Name the full address (e.g. deals@${criteria.from}) instead of the whole domain.`);
     }
     if ((args.trash || args.archive || args.mark_read) && isProtectedSender(criteria.from, protectedSenders)) {
       throw new GuardError(`${criteria.from} is a protected sender (security, sign-in or money mail). Filters may not trash, archive or mark it read. The user can do this in Gmail settings if they really want it.`);

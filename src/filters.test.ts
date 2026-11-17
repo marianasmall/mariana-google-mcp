@@ -54,6 +54,17 @@ test("protected senders cannot be trashed, archived or marked read (subdomains t
   assert.ok(build({ from: "google.com", never_spam: true }));
 });
 
+test("shared mail domains and bare public suffixes need a full address", () => {
+  for (const from of ["gmail.com", "GMAIL.COM", "hotmail.com", "co.uk", "com.au", "org.uk"]) {
+    refuses({ from, trash: true }, /too many unrelated senders/);
+    refuses({ from, never_spam: true }, /too many unrelated senders/);
+  }
+  assert.ok(build({ from: "deals.newsletter@gmail.com", trash: true }));
+  assert.ok(build({ from: "shop.co.uk", archive: true }));
+  // visibility actions are unaffected
+  assert.ok(build({ from: "gmail.com", star: true }));
+});
+
 test("trash cannot be combined with star/important/never_spam", () => {
   refuses({ from: "shop.example", trash: true, star: true }, /Pick one intent/);
   refuses({ from: "shop.example", trash: true, never_spam: true }, /Pick one intent/);
