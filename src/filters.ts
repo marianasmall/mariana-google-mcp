@@ -76,11 +76,13 @@ function containsRun(hay: string[], needle: string[]): boolean {
 
 export function isProtectedSender(from: string, protectedSenders: string[]): boolean {
   const d = senderDomain(from).replace(/\.+$/, "");
-  const dl = d.split(".");
+  // Tokenize like Gmail: every non-alphanumeric run is a boundary (so
+  // accounts-google.com yields accounts, google, com).
+  const dl = d.split(/[^a-z0-9]+/).filter(Boolean);
   return protectedSenders.some((p) => {
     const q = p.toLowerCase().replace(/^@/, "").replace(/\.+$/, "");
     if (!q) return false;
-    const ql = q.split(".");
+    const ql = q.split(/[^a-z0-9]+/).filter(Boolean);
     // Brand label ("google" in google.com) appearing as any part of the
     // candidate catches stop-short forms like service.paypal / accounts.google.
     const brand = ql[0];

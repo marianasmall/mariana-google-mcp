@@ -62,6 +62,9 @@ test("partial-token forms of protected domains are refused (Gmail token matching
   assert.equal(isProtectedSender("accounts.google", P), true);
   assert.equal(isProtectedSender("google.co", P), true); // brand label: cautious on purpose
   assert.equal(isProtectedSender("googlenews-deals.example", P), false);
+  for (const from of ["accounts-google.com", "a@accounts-google.com", "pay-pal.example".replace("pay-pal", "service-paypal")]) {
+    assert.equal(isProtectedSender(from, P), true, from);
+  }
 });
 
 test("punctuation-only local parts, stop-short brands and operator subjects are refused", () => {
